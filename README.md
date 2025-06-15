@@ -1,4 +1,4 @@
-# Repository-4-ai4u-remecomm-community-engagement
+# Repository-4-Lumi-remecomm-community-engagement
 
 ReMeComm Community Engagement
 
