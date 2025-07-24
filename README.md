@@ -1,187 +1,180 @@
-# Repository-4-Lumi-remecomm-community-engagement
+# luki-core-agent  
+*Primary LUKi brain: dialogue manager, tool orchestration, prompt packs & safety layers*  
+**PRIVATE / PROPRIETARY – Do NOT expose or mirror externally**
 
-ReMeComm Community Engagement
+---
 
-Develop ReMeComm (ReMeLife Community), an advanced AI-driven system designed to enhance community engagement for cared for individuals and their care circles within the ReMeLife ecosystem. The system leverages AI technologies to collect, analyse, and match community events, services, products, with user interests based on their ELR records..
+## 1. Overview  
+`luki-core-agent` contains the **agentic logic** that powers LUKi:  
+- System & persona prompts, dialogue state machines, tool-routing policies  
+- Safety, compliance and redaction filters  
+- Evaluation harnesses for prompt/chain quality  
+- Integration glue to call downstream modules (cognitive, engagement, reporting) and platform APIs
 
-This repository focuses on developing ReMeComm (ReMeLife Community), an advanced AI-driven system designed to enhance community engagement for cared for individuals and their care circles within the ReMeLife ecosystem. The system leverages AI technologies to collect, analyse, and match community events with user interests based on their Electronic Life Records (ELR).
- 
-Key Objectives:
-1.	Data Collection: Implement AI-powered web crawlers to gather information about local events, activities, and occasions from various online sources.
-2.	Geospatial Analysis: Develop algorithms to determine event proximity within a predefined radius of the user's care location.
-3.	ELR Integration: Create a system to cross-reference collected event data with users' ELR profiles, including interests of both the person cared for and their care circle.
-4.	Personalised Recommendations: Generate tailored suggestions for community-based activities that align with users' interests and capabilities.
-5.	User-Friendly Interface: Design an intuitive platform for families, carers, and care recipients to view and interact with event recommendations.
-6.	Community Economic Impact: Analyse and report on the potential economic benefits of increased community engagement for local businesses and care centers.
-7.	Feedback Loop: Implement a system to collect user feedback on event participation, using this data to refine future recommendations and measure community impact.
-This AI-driven approach to community engagement will significantly enhance the social lives of elderly individuals, promote community involvement, and create mutually beneficial relationships between care centers and local businesses. By leveraging AI to match personal interests with community events, ReMeComm will foster a more connected and vibrant community ecosystem centered around elderly care. 2, 5
+This repo is **closed-source IP**. Anything here (prompts, heuristics, fine‑tune adapters) must not leave our infra.
 
-Key AI technologies and processes for this package include:
-8.	Web Scraping and Data Mining: To gather information about local events, activities, and occasions from various online sources.
-9.	Natural Language Processing (NLP): To analyse and categorise event descriptions, extracting relevant information such as type, location, and time.
-10.	Geospatial Analysis: To determine the proximity of events to the user's location and calculate optimal routes.
-11.	Recommendation Systems: To match users' interests from their ELR with relevant community events and activities.
-12.	Machine Learning Algorithms: To improve event recommendations based on user feedback and participation patterns.
-13.	Sentiment Analysis: To gauge community reception and feedback on various events and activities.
-14.	Time Series Forecasting: To predict upcoming events and plan recommendations in advance.
-Integration process:
-15.	Data Collection Engine: Develop AI-powered web crawlers to gather community event information from various online sources.
-16.	Event Classification System: Implement NLP algorithms to categorise and tag events based on their descriptions and attributes.
-17.	User-Event Matching Algorithm: Create an AI system that cross-references user ELR data with event information to generate personalised recommendations.
-18.	Geolocation Integration: Incorporate mapping services to provide location-based event suggestions within the specified radius.
-19.	User Interface Development: Design an intuitive interface for users, carers, and family members to view and interact with event recommendations.
-20.	Feedback Loop: Implement a system to collect user feedback on event suggestions and participation, using this data to refine future recommendations.
-21.	Community Analytics Dashboard: Develop a tool for care centers and local businesses to view anonymised data on community engagement and event popularity.
-This AI-driven approach to community engagement will significantly enhance the social lives of elderly individuals, promote community involvement, and create mutually beneficial relationships between care centers and local businesses. By leveraging AI to match personal interests with community events, ReMeComm will foster a more connected and vibrant community ecosystem centered around elderly care.
-Analysing the requirements, suggesting appropriate AI technologies and libraries, and providing a sample Python code structure for Work Packet #4: ReMeComm Community Engagement.
- 
-1.	Analysis of requirements:
-•	AI-powered web crawling for event data collection
-•	Geospatial analysis for event proximity
-•	ELR integration and cross-referencing
-•	Personalised event recommendations
-•	User-friendly interface design
-•	Community economic impact analysis
-•	Feedback collection and recommendation refinement
-2.	Suggested AI technologies and libraries:
-•	Web Scraping: Scrapy or Beautiful Soup
-•	Natural Language Processing: spaCy or NLTK
-•	Geospatial Analysis: GeoPy or Shapely
-•	Machine Learning: scikit-learn
-•	Recommendation Systems: Surprise
-•	Sentiment Analysis: TextBlob
-•	Time Series Forecasting: Prophet or statsmodels
+---
 
-3. Explanation and areas for further development:
-This following code provides a basic structure for the ReMeComm Community Engagement system. It includes methods for collecting and analysing event data, generating personalised recommendations, calculating event proximity, analysing community impact, collecting user feedback, and predicting future events.Areas for further development:
-•	Implement more sophisticated web scraping techniques for comprehensive event data collection
-•	Enhance the recommendation system with more advanced algorithms, possibly incorporating collaborative filtering
-•	Develop a more robust geospatial analysis system, including route optimisation
-•	Create a user-friendly interface for displaying event recommendations and collecting feedback
-•	Implement more detailed economic impact analysis, considering various factors like event type and local economic conditions
-•	Enhance the feedback system to provide more nuanced insights into user preferences and event quality
-•	Develop a more comprehensive time series forecasting model for predicting future events and trends
-•	Implement privacy-preserving techniques for handling sensitive user data
-•	Create APIs for integration with other components of the ReMeLife ecosystem
-This code serves as a starting point and would need to be expanded and integrated with the ReMeLife ecosystem for full functionality. It demonstrates the potential for creating an AI-driven community engagement system that can enhance the social lives of elderly individuals and promote community involvement.
+## 2. Core Responsibilities  
+- **Conversation Orchestration:** Manage multi-turn context, memory retrieval, and goal decomposition.  
+- **Tool/Skill Routing:** Decide when to call `recommend_activity`, `generate_wellbeing_report`, ELR search, etc.  
+- **Safety & Guardrails:** Redact PII, enforce consent scopes, block unsafe content, comply with care guidelines.  
+- **Prompt Pack Management:** Versioned system/instruction prompts, response formats, eval prompts.  
+- **LLM Backends:** Wrapper to selected base model(s) (e.g., LLaMA‑3 + OpenAI fallback).  
+- **Session Memory Interface:** Hooks into memory-service (vector + KV) for ELR retrieval and summary caching.  
+- **Eval & Telemetry:** Auto-eval scripts (BLEU/ROUGE for reports, human ratings logs, trace IDs, latency metrics).
 
-4. Sample Python code structure:
+---
 
-# ReMeComm System
+## 3. Tech Stack  
+- **Framework:** LangChain (core routing), plus custom policy layer  
+- **Models:** LLaMA‑3 (local/hosted), OpenAI GPT-* fallback (via feature flag)  
+- **Prompt Templating:** Jinja2 / LangChain PromptTemplates  
+- **Safety Filters:** regex + PII detectors, OpenAI moderation or local classifier fallback  
+- **Tracing & Eval:** LangSmith / OpenTelemetry, custom eval scripts  
+- **Server:** FastAPI for internal dev endpoints (optional); production served via `luki-api-gateway` repo
 
-This repository contains a sample implementation of the ReMeComm System. The code demonstrates various functionalities including collecting and analysing event data, calculating event proximity, generating recommendations, analysing community impact, collecting user feedback, and predicting future events.
+---
 
-## Sample Code
+## 4. Repository Structure  
+~~~text
+luki_core_agent/
+├── README.md
+├── pyproject.toml
+├── luki_agent/
+│   ├── __init__.py
+│   ├── config.py                  # feature flags, model routing, rate limits
+│   ├── prompts/
+│   │   ├── system/                # system persona, safety system prompts
+│   │   ├── tools/                 # tool-call specific templates
+│   │   ├── eval/                  # eval and grading prompts
+│   │   └── fragments/             # reusable blocks
+│   ├── chains/
+│   │   ├── conversation_chain.py  # main orchestrator
+│   │   ├── tool_router.py         # policy-based routing
+│   │   ├── safety_chain.py        # redaction, refusal handling
+│   │   └── summariser_chain.py    # memory/ELR summarisation
+│   ├── tools/
+│   │   ├── registry.py            # register public module tools
+│   │   └── wrappers/              # http clients for other repos/APIs
+│   ├── memory/
+│   │   ├── retriever.py           # vector+kv retriever
+│   │   └── session_store.py       # ephemeral session memory
+│   ├── eval/
+│   │   ├── eval_runner.py         # batch eval jobs
+│   │   ├── metrics.py
+│   │   └── datasets/              # synthetic eval sets
+│   └── telemetry/
+│       ├── tracing.py
+│       └── logging.py
+├── scripts/
+│   ├── run_dev_server.sh
+│   ├── batch_eval.sh
+│   └── sync_prompts.py
+└── tests/
+    ├── unit/
+    └── integration/
+~~~
 
-```python
-import scrapy
-import spacy
-from geopy.distance import geodesic
-from sklearn.feature_extraction.text import TfidfVectoriser
-from sklearn.metrics.pairwise import cosine_similarity
-from textblob import TextBlob
-from prophet import Prophet
+---
 
-class ReMeCommSystem:
-    def __init__(self):
-        self.nlp = spacy.load("en_core_web_sm")
-        self.tfidf_vectoriser = TfidfVectoriser()
-        self.event_data = []
-        self.user_profiles = {}
+## 5. Quick Start (Internal Dev)
 
-    def collect_event_data(self):
-        # Implement web scraping logic here
-        # This is a placeholder for the web scraping functionality
-        class EventSpider(scrapy.Spider):
-            name = 'event_spider'
-            start_urls = ['https://example.com/events']
-            def parse(self, response):
-                for event in response.css('div.event'):
-                    yield {
-                        'title': event.css('h2::text').get(),
-                        'description': event.css('p::text').get(),
-                        'location': event.css('span.location::text').get(),
-                        'date': event.css('span.date::text').get()
-                    }
-        # The actual scraping would be initiated here
+~~~bash
+git clone git@github.com:REMELife/luki-core-agent.git
+cd luki-core-agent
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+# Optional local model
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+~~~
 
-    def analyse_event_data(self, event):
-        doc = self.nlp(event['description'])
-        event['keywords'] = [token.lemma_ for token in doc if not token.is_stop and token.is_alpha]
-        return event
+Set env vars:
 
-    def calculate_event_proximity(self, user_location, event_location):
-        return geodesic(user_location, event_location).miles
+~~~bash
+export LUKI_MODEL_BACKEND=llama3_local   # or openai
+export OPENAI_API_KEY=sk-...             # only if using fallback
+export MEMORY_API_URL=http://localhost:8002
+export MODULES_TOKEN=dev123              # auth to call public modules
+~~~
 
-    def generate_recommendations(self, user_id):
-        user_interests = self.user_profiles[user_id]['interests']
-        user_vector = self.tfidf_vectoriser.fit_transform([' '.join(user_interests)])
-        event_vectors = self.tfidf_vectoriser.transform([' '.join(event['keywords']) for event in self.event_data])
-        similarities = cosine_similarity(user_vector, event_vectors)
-        recommended_events = sorted(sip(self.event_data, similarities[0]), key=lambda x: x[1], reverse=True)
-        return recommended_events[:5]  # Return top 5 recommendations
+Run dev server (optional):
 
-    def analyse_community_impact(self, event_participation_data):
-        # Simplified economic impact analysis
-        total_participants = sum(event_participation_data.values())
-        average_spending = 20  # Assumed average spending per participant
-        economic_impact = total_participants * average_spending
-        return economic_impact
+~~~bash
+uvicorn luki_agent.dev_api:app --reload --port 9000
+~~~
 
-    def collect_user_feedback(self, user_id, event_id, feedback_text):
-        sentiment = TextBlob(feedback_text).sentiment.polarity
-        # Store feedback and use it to update user preferences and event ratings
+Chat locally:
 
-    def predict_future_events(self, historical_event_data):
-        df = pd.DataFrame(historical_event_data)
-        m = Prophet()
-        m.fit(df)
-        future = m.make_future_dataframe(periods=30)  # Predict for next 30 days
-        forecast = m.predict(future)
-        return forecast
+~~~python
+from luki_agent.chains.conversation_chain import LukiConversation
 
-# Example usage
-remecomm = ReMeCommSystem()
+agent = LukiConversation()
+resp = agent.chat(user_id="user_123", message="Any ideas for a calming activity?")
+print(resp.text)
+print(resp.tool_calls)  # if any
+~~~
 
-# Collect event data
-remecomm.collect_event_data()
+Batch eval:
 
-# Analyse event data
-analysed_events = [remecomm.analyse_event_data(event) for event in remecomm.event_data]
+~~~bash
+python -m luki_agent.eval.eval_runner --dataset data/eval/basic.jsonl --out results/basic_eval.jsonl
+python -m luki_agent.eval.metrics results/basic_eval.jsonl
+~~~
 
-# Generate recommendations for a user
-user_id = "user123"
-recommendations = remecomm.generate_recommendations(user_id)
-print(f"Recommended events for user {user_id}:", recommendations)
+---
 
-# Calculate event proximity
-user_location = (40.7128, -74.0060)  # New York City coordinates
-event_location = (40.7484, -73.9857)  # Empire State Building coordinates
-distance = remecomm.calculate_event_proximity(user_location, event_location)
-print(f"Distance to event: {distance} miles")
+## 6. Prompt & Tool Versioning  
+- Keep **all prompt files in `prompts/`**, no hard-coded strings.  
+- Each change => bump prompt version (e.g., `system_v3.j2`).  
+- Use `sync_prompts.py` to push/pull from secure S3/Git-crypt store.  
+- Tools are registered in `tools/registry.py` with versioned contracts.
 
-# Analyse community impact
-event_participation = {"Event1": 50, "Event2": 30, "Event3": 70}
-impact = remecomm.analyse_community_impact(event_participation)
-print(f"Estimated economic impact: ${impact}")
+---
 
-# Collect user feedback
-remecomm.collect_user_feedback(user_id, "event456", "The event was fantastic and very engaging!")
+## 7. Safety, Compliance & Consent  
+- Redact PII before sending context to external LLMs.  
+- Respect user consent scopes (ELR segments) in `tool_router.py`.  
+- Audit logs (trace IDs) stored via telemetry hooks.  
+- Add new safety rules in `safety_chain.py`; accompany with tests.
 
-# Predict future events
-historical_data = [
-    {"ds": "2025-01-01", "y": 10},
-    {"ds": "2025-01-02", "y": 15},
-    {"ds": "2025-01-03", "y": 12}
-]
-future_events = remecomm.predict_future_events(historical_data)
-print("Predicted future events:", future_events.tail())
-Explanation
-ReMeCommSystem Class: Manages event data collection, analysis, and recommendations, as well as community impact analysis, user feedback collection, and future event prediction.
-collect_event_data: Implements web scraping logic to collect event data.
-analyse_event_data: Analyses event descriptions to extract keywords using spaCy.
-calculate_event_proximity: Calculates the distance between user and event locations using geodesic distance.
-generate_recommendations: Generates event recommendations based on user interests using TF-IDF and cosine similarity.
-analyse_community_impact: Analyses the economic impact of event participation.
-collect_user_feedback: Collects and analyses user feedback for sentiment.
-predict_future_events: Predicts future events using historical data and Prophet.
+---
+
+## 8. Testing & CI  
+- **Unit tests:** prompt formatting, router policies, safety regex.  
+- **Integration tests:** fake memory + mock tool servers.  
+- **Eval harness:** use synthetic dialogues to regression-test style & safety.  
+Run:  
+~~~bash
+pytest -q
+python -m luki_agent.eval.eval_runner ...
+~~~
+
+---
+
+## 9. Roadmap  
+- Multi-agent subteams (planner, critic, executor)  
+- Structured output enforcement (json schema tool calls)  
+- RLHF-lite loop using user thumbs-up/down  
+- Realtime streaming support (server-sent events)  
+- Fine-grained AB tests on prompt variants
+
+---
+
+## 10. Contributing (Internal Only)  
+- Create a feature branch: `feature/<ticket>-<short-desc>`  
+- Never commit raw user data or secrets.  
+- Any prompt changes must include an eval run result.  
+- Code review by at least 1 core maintainer.  
+See `CONTRIBUTING.md` for full rules.
+
+---
+
+## 11. License  
+**Proprietary – All Rights Reserved**  
+Copyright © 2025 Singularities Ltd / ReMeLife.  
+Unauthorized copying, modification, distribution, or disclosure is strictly prohibited.
+
+---
+
+**This is the brain. Guard it.**
