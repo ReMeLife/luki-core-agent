@@ -7,7 +7,7 @@ user state, and temporary context data.
 
 import json
 import redis
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, cast
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
@@ -63,7 +63,9 @@ class SessionStore:
             if not data:
                 return None
             
-            session_data = json.loads(data)
+            # Ensure data is a string before JSON parsing
+            data_str = data if isinstance(data, str) else str(data)
+            session_data = json.loads(data_str)
             
             # Convert conversation history back to objects
             conversation_history = []
@@ -307,7 +309,9 @@ class SessionStore:
         """
         try:
             pattern = f"{self.key_prefix}*"
-            keys = self.redis_client.keys(pattern)
+            # Explicitly cast Redis response to resolve type checker confusion
+            keys_response = cast(List[str], self.redis_client.keys(pattern))
+            keys = keys_response or []
             
             cleaned = 0
             cutoff = datetime.utcnow() - timedelta(seconds=self.session_ttl)
@@ -316,7 +320,9 @@ class SessionStore:
                 try:
                     data = self.redis_client.get(key)
                     if data:
-                        session_data = json.loads(data)
+                        # Ensure data is a string before JSON parsing
+                        data_str = data if isinstance(data, str) else str(data)
+                        session_data = json.loads(data_str)
                         last_activity = datetime.fromisoformat(session_data["last_activity"])
                         
                         if last_activity < cutoff:

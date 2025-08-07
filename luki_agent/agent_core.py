@@ -95,7 +95,7 @@ class LukiAgent:
             session = await self._get_or_create_session(request.user_id, request.session_id)
             
             # Store user message in session
-            await self.session_store.add_conversation_turn(
+            self.session_store.add_conversation_turn(
                 session.session_id,
                 "user",
                 request.user_input,
@@ -139,7 +139,7 @@ class LukiAgent:
             )
             
             # Store assistant message in session
-            await self.session_store.add_conversation_turn(
+            self.session_store.add_conversation_turn(
                 session.session_id,
                 "assistant",
                 filtered_response,
@@ -189,7 +189,7 @@ class LukiAgent:
             session = await self._get_or_create_session(request.user_id, request.session_id)
             
             # Store user message
-            await self.session_store.add_conversation_turn(
+            self.session_store.add_conversation_turn(
                 session.session_id,
                 "user",
                 request.user_input,
@@ -218,7 +218,7 @@ class LukiAgent:
                 yield filtered_chunk
             
             # Store complete response
-            await self.session_store.add_conversation_turn(
+            self.session_store.add_conversation_turn(
                 session.session_id,
                 "assistant",
                 full_response
@@ -249,7 +249,7 @@ class LukiAgent:
             limit=settings.conversation_buffer_size
         )
         
-        context_result = self.context_builder.build(
+        context_result = await self.context_builder.build(
             user_input=request.user_input,
             user_id=request.user_id,
             conversation_history=conversation_history,
@@ -277,7 +277,7 @@ class LukiAgent:
         """Create response when input is safety filtered"""
         safety_message = "I understand you'd like to chat, but I need to be careful about the topics we discuss. Could you please rephrase your message or ask about something else?"
         
-        await self.session_store.add_conversation_turn(
+        self.session_store.add_conversation_turn(
             session.session_id,
             "assistant",
             safety_message,
@@ -324,9 +324,9 @@ class LukiAgent:
                     summary=f"User: {request.user_input[:100]}... | LUKi: {response.content[:100]}...",
                     metadata={
                         "handler_type": request.handler_type,
-                        "retrieval_count": len(response.context_used.retrieval_results),
-                        "context_tokens": response.context_used.total_tokens,
-                        "processing_time": response.metadata.get("processing_time", 0)
+                        "retrieval_count": len(response.context_used.retrieval_results) if response.context_used and response.context_used.retrieval_results else 0,
+                        "context_tokens": response.context_used.total_tokens if response.context_used else 0,
+                        "processing_time": response.metadata.get("processing_time", 0) if response.metadata else 0
                     }
                 )
         except Exception as e:

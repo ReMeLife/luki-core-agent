@@ -233,6 +233,9 @@ class LocalLLaMABackend(LLMBackend):
         kwargs: Dict[str, Any]
     ) -> ModelResponse:
         """Synchronous generation for thread pool"""
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model or tokenizer not loaded. Check dependencies and model path.")
+        
         inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
         
         if self.torch.cuda.is_available():
@@ -244,7 +247,7 @@ class LocalLLaMABackend(LLMBackend):
                 max_new_tokens=max_tokens or self.config.get("max_tokens", 2048),
                 temperature=temperature or self.config.get("temperature", 0.7),
                 do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.eos_token_id if self.tokenizer.eos_token_id else self.tokenizer.pad_token_id,
                 **kwargs
             )
         
@@ -458,14 +461,38 @@ class LLMManager:
         if not self.backend:
             raise RuntimeError("No backend initialized")
         
-        async for chunk in self.backend.generate_stream(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop_sequences=stop_sequences,
-            **kwargs
-        ):
-            yield chunk
+        # Check if backend has generate_stream method
+        if hasattr(self.backend, 'generate_stream'):
+            try:
+                stream_generator = self.backend.generate_stream(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stop_sequences=stop_sequences,
+                    **kwargs
+                )
+                async for chunk in stream_generator:
+                    yield chunk
+            except Exception as e:
+                # If streaming fails, fallback to regular generation
+                response = await self.backend.generate(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stop_sequences=stop_sequences,
+                    **kwargs
+                )
+                yield response.content
+        else:
+            # Fallback to non-streaming generation
+            response = await self.backend.generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop_sequences=stop_sequences,
+                **kwargs
+            )
+            yield response.content
     
     async def close(self):
         """Close backend resources"""

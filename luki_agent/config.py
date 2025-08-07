@@ -1,72 +1,73 @@
-"""
-Configuration management for LUKi Core Agent
+"""Configuration management for LUKi Agent
 
-Handles environment variables, feature flags, model routing, and service URLs.
+Handles environment variables, model settings, service URLs, and feature flags.
+Uses Pydantic for validation and type safety.
 """
 
 import os
 from typing import Optional, List
-from pydantic import BaseSettings, Field
+from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 class LukiAgentSettings(BaseSettings):
-    """Configuration settings for LUKi Core Agent"""
+    """Configuration settings for LUKi Agent"""
     
     # Service Configuration
-    service_name: str = Field(default="luki-core-agent", env="SERVICE_NAME")
-    service_version: str = Field(default="0.1.0", env="SERVICE_VERSION")
-    environment: str = Field(default="development", env="ENVIRONMENT")
-    debug: bool = Field(default=True, env="DEBUG")
+    service_name: str = "luki-core-agent"
+    service_version: str = "0.1.0"
+    environment: str = "development"
+    debug: bool = True
     
     # Server Configuration
-    host: str = Field(default="0.0.0.0", env="HOST")
-    port: int = Field(default=9000, env="PORT")
+    host: str = "0.0.0.0"
+    port: int = 9000
     
     # Model Configuration
-    model_backend: str = Field(default="openai", env="LUKI_MODEL_BACKEND")  # openai, llama3_local, llama3_hosted
-    model_name: str = Field(default="gpt-3.5-turbo", env="MODEL_NAME")
-    model_temperature: float = Field(default=0.7, env="MODEL_TEMPERATURE")
-    max_tokens: int = Field(default=2048, env="MAX_TOKENS")
+    model_backend: str = "openai"  # openai, llama3_local, llama3_hosted
+    model_name: str = "gpt-3.5-turbo"
+    model_temperature: float = 0.7
+    max_tokens: int = 2048
     
     # OpenAI Configuration
-    openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
-    openai_organization: Optional[str] = Field(default=None, env="OPENAI_ORGANIZATION")
+    openai_api_key: Optional[str] = None
+    openai_organization: Optional[str] = None
     
     # Local Model Configuration
-    local_model_path: Optional[str] = Field(default=None, env="LOCAL_MODEL_PATH")
-    device: str = Field(default="auto", env="DEVICE")  # auto, cpu, cuda
+    local_model_path: Optional[str] = None
+    device: str = "auto"  # auto, cpu, cuda
     
     # Context Configuration
-    max_context_tokens: int = Field(default=2048, env="MAX_CONTEXT_TOKENS")
-    retrieval_top_k: int = Field(default=6, env="RETRIEVAL_TOP_K")
-    conversation_buffer_size: int = Field(default=20, env="CONVERSATION_BUFFER_SIZE")
+    max_context_tokens: int = 2048
+    retrieval_top_k: int = 6
+    conversation_buffer_size: int = 20
     
     # Memory Service Configuration
-    memory_service_url: str = Field(default="http://localhost:8002", env="MEMORY_SERVICE_URL")
-    memory_service_timeout: int = Field(default=30, env="MEMORY_SERVICE_TIMEOUT")
+    memory_service_url: str = "http://localhost:8002"
+    memory_service_timeout: int = 30
     
     # Authentication
-    modules_token: Optional[str] = Field(default=None, env="MODULES_TOKEN")
-    internal_api_key: Optional[str] = Field(default=None, env="INTERNAL_API_KEY")
+    modules_token: Optional[str] = None
+    internal_api_key: Optional[str] = None
     
     # Safety and Compliance
-    enable_safety_filter: bool = Field(default=True, env="ENABLE_SAFETY_FILTER")
-    enable_pii_redaction: bool = Field(default=True, env="ENABLE_PII_REDACTION")
-    enable_consent_checking: bool = Field(default=True, env="ENABLE_CONSENT_CHECKING")
+    enable_safety_filter: bool = True
+    enable_pii_redaction: bool = True
+    enable_consent_checking: bool = True
     
     # Logging and Telemetry
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    enable_tracing: bool = Field(default=True, env="ENABLE_TRACING")
-    jaeger_endpoint: Optional[str] = Field(default=None, env="JAEGER_ENDPOINT")
+    log_level: str = "INFO"
+    enable_tracing: bool = True
+    jaeger_endpoint: Optional[str] = None
     
     # Redis Configuration (for caching and session storage)
-    redis_url: str = Field(default="redis://localhost:6379", env="REDIS_URL")
-    redis_password: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    redis_url: str = "redis://localhost:6379"
+    redis_password: Optional[str] = None
     
     # Feature Flags
-    enable_streaming: bool = Field(default=True, env="ENABLE_STREAMING")
-    enable_tool_use: bool = Field(default=True, env="ENABLE_TOOL_USE")
-    enable_memory_updates: bool = Field(default=True, env="ENABLE_MEMORY_UPDATES")
+    enable_streaming: bool = True
+    enable_tool_use: bool = True
+    enable_memory_updates: bool = True
     
     class Config:
         env_file = ".env"
@@ -78,34 +79,25 @@ class LukiAgentSettings(BaseSettings):
 settings = LukiAgentSettings()
 
 
+def get_context_config() -> dict:
+    """Get context-specific configuration"""
+    return {
+        "max_context_tokens": settings.max_context_tokens,
+        "retrieval_top_k": settings.retrieval_top_k,
+        "conversation_buffer_size": settings.conversation_buffer_size,
+        "enable_memory_updates": settings.enable_memory_updates,
+    }
+
+
 def get_model_config() -> dict:
-    """Get model configuration based on selected backend"""
-    base_config = {
+    """Get model-specific configuration"""
+    return {
+        "backend": settings.model_backend,
+        "name": settings.model_name,
         "temperature": settings.model_temperature,
         "max_tokens": settings.max_tokens,
+        "device": settings.device,
     }
-    
-    if settings.model_backend == "openai":
-        return {
-            **base_config,
-            "model_name": settings.model_name,
-            "api_key": settings.openai_api_key,
-            "organization": settings.openai_organization,
-        }
-    elif settings.model_backend == "llama3_local":
-        return {
-            **base_config,
-            "model_path": settings.local_model_path,
-            "device": settings.device,
-        }
-    elif settings.model_backend == "llama3_hosted":
-        return {
-            **base_config,
-            "model_name": settings.model_name,
-            "api_key": settings.openai_api_key,  # Many hosted services use OpenAI-compatible APIs
-        }
-    else:
-        raise ValueError(f"Unknown model backend: {settings.model_backend}")
 
 
 def get_safety_config() -> dict:
@@ -114,13 +106,4 @@ def get_safety_config() -> dict:
         "enable_safety_filter": settings.enable_safety_filter,
         "enable_pii_redaction": settings.enable_pii_redaction,
         "enable_consent_checking": settings.enable_consent_checking,
-    }
-
-
-def get_context_config() -> dict:
-    """Get context building configuration"""
-    return {
-        "max_context_tokens": settings.max_context_tokens,
-        "retrieval_top_k": settings.retrieval_top_k,
-        "conversation_buffer_size": settings.conversation_buffer_size,
     }
