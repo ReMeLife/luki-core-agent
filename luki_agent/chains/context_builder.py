@@ -15,18 +15,17 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
 from ..config import settings
+from ..memory.memory_client import (
+    MemoryServiceClient, 
+    ELRMemory, 
+    UserInsight, 
+    UserPreferences,
+    get_memory_client
+)
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class ELRMemory:
-    """Represents a retrieved ELR memory"""
-    memory_id: str
-    content: str
-    timestamp: datetime
-    relevance_score: float
-    memory_type: str  # 'activity', 'health', 'mood', 'goal', etc.
-    metadata: Dict[str, Any]
+# ELRMemory, UserInsight, and UserPreferences are imported from memory_client.py
 
 @dataclass
 class UserProfile:
@@ -79,7 +78,7 @@ class LukiContextBuilder:
             user_id: User identifier
             message: Current user message
             conversation_history: Previous conversation turns
-            session_context: Additional session context
+            session_context: Current session context
             
         Returns:
             Rich conversation context for LLM generation
@@ -87,24 +86,29 @@ class LukiContextBuilder:
         try:
             logger.info(f"Building context for user {user_id}")
             
-            # Step 1: Get or build user profile
-            user_profile = await self._get_user_profile(user_id)
+            # Get memory service client
+            memory_client = await get_memory_client()
             
-            # Step 2: Retrieve relevant ELR memories
-            relevant_memories = await self._retrieve_relevant_memories(user_id, message, user_profile)
+            # Build user profile from memory service
+            user_profile = await self._build_user_profile(user_id, memory_client)
             
-            # Step 3: Analyze conversation patterns
-            conversation_summary = await self._analyze_conversation_history(conversation_history)
-            
-            # Step 4: Determine current context
-            current_mood = await self._infer_current_mood(message, conversation_history)
-            time_context = self._build_time_context()
-            environmental_context = self._build_environmental_context(session_context)
-            
-            # Step 5: Generate contextual prompt template
-            prompt_template = await self._generate_prompt_template(
-                user_profile, relevant_memories, conversation_summary, current_mood
+            # Retrieve relevant memories using semantic search
+            relevant_memories = await self._retrieve_relevant_memories(
+                user_id, message, memory_client
             )
+            
+            # Get recent activities and insights
+            recent_activities = await memory_client.get_recent_activities(user_id, days=7)
+            user_insights = await memory_client.get_user_insights(user_id, limit=3)
+            
+            # Build context components
+            conversation_summary = self._summarize_conversation(conversation_history)
+            current_mood = await self._infer_mood(user_id, message, conversation_history)
+            time_context = self._build_time_context()
+            environmental_context = await self._build_environmental_context(
+                user_id, recent_activities, user_insights
+            )
+            prompt_template = await self._build_prompt_template(user_profile, relevant_memories)
             
             context = ConversationContext(
                 user_profile=user_profile,
@@ -116,19 +120,27 @@ class LukiContextBuilder:
                 prompt_template=prompt_template
             )
             
-            logger.info(f"Built context with {len(relevant_memories)} memories and {len(conversation_summary)} char summary")
+            logger.info(f"Built context with {len(relevant_memories)} memories and {len(recent_activities)} activities")
             return context
             
         except Exception as e:
             logger.error(f"Context building error: {e}")
-            return await self._build_fallback_context(user_id, message)
-    
-    async def _get_user_profile(self, user_id: str) -> Optional[UserProfile]:
+            # Return minimal context on error
+            return ConversationContext(
+                user_profile=None,
+                relevant_memories=[],
+                conversation_summary="",
+                current_mood=None,
+                time_context=self._build_time_context(),
+                environmental_context={},
+                prompt_template="You are LUKi, a helpful AI assistant."
+            )
+
+    async def _build_user_profile(self, user_id: str, memory_client: MemoryServiceClient) -> Optional[UserProfile]:
         """
-        Get or build user preference profile
+        Build user preference profile from memory service
         
-        TODO: Integrate with memory service to retrieve user preferences,
-        patterns, and historical data for personalization.
+        TODO: Implement actual memory service integration
         """
         cache_key = f"profile_{user_id}"
         
@@ -168,13 +180,22 @@ class LukiContextBuilder:
             
         except Exception as e:
             logger.error(f"Error building user profile: {e}")
-            return None
+            # Return basic profile on error
+            return UserProfile(
+                user_id=user_id,
+                preferences={"communication_style": "supportive"},
+                patterns={},
+                goals=[],
+                interests=[],
+                communication_style="supportive",
+                last_updated=datetime.now()
+            )
     
     async def _retrieve_relevant_memories(
         self,
         user_id: str,
         message: str,
-        user_profile: Optional[UserProfile]
+        memory_client: MemoryServiceClient
     ) -> List[ELRMemory]:
         """
         Retrieve relevant ELR memories based on current message and context
@@ -183,10 +204,18 @@ class LukiContextBuilder:
         of user's Electronic Life Record data.
         """
         try:
-            # TODO: Implement actual memory service integration
-            # This would perform semantic search against the user's ELR data
+            # Use memory service for semantic search
+            memories = await memory_client.search_memories(
+                user_id=user_id,
+                query=message,
+                limit=5
+            )
             
-            # For now, create mock relevant memories based on message content
+            if memories:
+                logger.info(f"Retrieved {len(memories)} memories from service")
+                return memories
+            
+            # Fallback to mock memories for development
             mock_memories = []
             
             # Analyze message for key topics
@@ -321,18 +350,7 @@ class LukiContextBuilder:
         else:
             return "night"
     
-    def _build_environmental_context(self, session_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Build environmental and session context"""
-        context = {
-            "platform": "luki_core_agent",
-            "interface": "chat",
-            "capabilities": ["conversation", "memory_access", "personalization"]
-        }
-        
-        if session_context:
-            context.update(session_context)
-        
-        return context
+# Removed duplicate _build_environmental_context method - using the enhanced version below
     
     async def _generate_prompt_template(
         self,
@@ -456,6 +474,140 @@ Your Response:"""
             prompt_template=self._get_fallback_prompt_template()
         )
     
+    def _summarize_conversation(self, conversation_history: List[Dict[str, Any]]) -> str:
+        """
+        Summarize conversation history to identify patterns and themes
+        """
+        if not conversation_history:
+            return "This is the beginning of the conversation."
+        
+        try:
+            # Extract key themes and patterns
+            recent_topics = []
+            user_sentiment = []
+            
+            for turn in conversation_history[-5:]:  # Last 5 turns
+                message = turn.get('message', '')
+                response = turn.get('response', '')
+                
+                # Simple topic extraction (could be enhanced with NLP)
+                if any(word in message.lower() for word in ['health', 'exercise', 'fitness']):
+                    recent_topics.append('health')
+                if any(word in message.lower() for word in ['work', 'productivity', 'goal']):
+                    recent_topics.append('productivity')
+                if any(word in message.lower() for word in ['mood', 'feeling', 'emotional']):
+                    recent_topics.append('emotional_wellbeing')
+            
+            # Build summary
+            if recent_topics:
+                topic_summary = f"Recent conversation topics: {', '.join(set(recent_topics))}"
+            else:
+                topic_summary = "General conversation"
+            
+            conversation_length = len(conversation_history)
+            summary = f"{topic_summary}. Conversation depth: {conversation_length} turns."
+            
+            logger.info(f"Summarized conversation history: {summary}")
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Conversation summary error: {e}")
+            return "Unable to analyze conversation history."
+
+    async def _infer_mood(
+        self,
+        user_id: str,
+        message: str,
+        conversation_history: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """
+        Infer user's current emotional state from message and context
+        
+        TODO: Implement sophisticated sentiment analysis and mood detection
+        """
+        try:
+            message_lower = message.lower()
+            
+            # Simple mood inference (could be enhanced with ML models)
+            if any(word in message_lower for word in ['excited', 'happy', 'great', 'awesome', 'wonderful']):
+                return 'positive'
+            elif any(word in message_lower for word in ['stressed', 'worried', 'anxious', 'difficult', 'hard']):
+                return 'stressed'
+            elif any(word in message_lower for word in ['tired', 'exhausted', 'drained', 'overwhelmed']):
+                return 'tired'
+            elif any(word in message_lower for word in ['confused', 'uncertain', 'unsure', 'lost']):
+                return 'uncertain'
+            else:
+                return 'neutral'
+                
+        except Exception as e:
+            logger.error(f"Mood inference error: {e}")
+            return None
+
+    async def _build_environmental_context(
+        self,
+        user_id: str,
+        recent_activities: List[ELRMemory],
+        user_insights: List[UserInsight]
+    ) -> Dict[str, Any]:
+        """Build environmental and session context with ELR data"""
+        context = {
+            "platform": "luki_core_agent",
+            "interface": "chat",
+            "capabilities": ["conversation", "memory_access", "personalization"],
+            "recent_activity_count": len(recent_activities),
+            "available_insights": len(user_insights)
+        }
+        
+        # Add recent activity patterns
+        if recent_activities:
+            activity_types = [activity.memory_type for activity in recent_activities]
+            context["recent_activity_types"] = list(set(activity_types))
+        
+        # Add insight summaries
+        if user_insights:
+            insight_types = [insight.insight_type for insight in user_insights]
+            context["available_insight_types"] = list(set(insight_types))
+        
+        return context
+
+    async def _build_prompt_template(
+        self,
+        user_profile: Optional[UserProfile],
+        relevant_memories: List[ELRMemory]
+    ) -> str:
+        """
+        Build a rich, contextual prompt template for LLM generation
+        
+        This creates sophisticated, personalized context based on user data and conversation history.
+        """
+        try:
+            # Build personalized prompt sections
+            identity_section = self._build_identity_section()
+            user_section = self._build_user_section(user_profile)
+            memory_section = self._build_memory_section(relevant_memories)
+            instruction_section = self._build_instruction_section(user_profile, None)
+            
+            # Combine into comprehensive prompt template
+            prompt_template = f"""{identity_section}
+
+{user_section}
+
+{memory_section}
+
+{instruction_section}
+
+Current User Message: {{user_message}}
+
+Your Response:"""
+            
+            logger.info("Generated rich contextual prompt template")
+            return prompt_template
+            
+        except Exception as e:
+            logger.error(f"Prompt template generation error: {e}")
+            return self._get_fallback_prompt_template()
+
     def clear_cache(self):
         """Clear the context cache"""
         self.context_cache.clear()
