@@ -71,12 +71,27 @@ class LukiAgent:
         self.safety_chain = SafetyChain()
         self.tool_registry = ToolRegistry()
         
+        # Register tools
+        self._register_tools()
+        
         # Agent state
         self.agent_id = str(uuid.uuid4())
         self.started_at = datetime.utcnow()
         self.conversation_count = 0
         
         print(f"LUKi Agent initialized (ID: {self.agent_id})")
+    
+    def _register_tools(self):
+        """Register all available tools"""
+        # Register memory tools
+        self.tool_registry.register_memory_tools(self.memory_retriever)
+        
+        # Register cognitive tools (Phase 1C integration)
+        self.tool_registry.register_cognitive_tools()
+        
+        # Log registered tools
+        tools = self.tool_registry.list_tools()
+        print(f"📋 Registered {len(tools)} tools: {[t['name'] for t in tools]}")
     
     async def chat(self, request: ConversationRequest) -> AgentResponse:
         """
