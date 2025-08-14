@@ -28,7 +28,7 @@ This repo is **closed-source IP**. Anything here (prompts, heuristics, fine‑tu
 
 ## 3. Tech Stack  
 - **Framework:** LangChain (core routing), plus custom policy layer  
-- **Models:** LLaMA‑3 (local/hosted), OpenAI GPT-* fallback (via feature flag)  
+- **Models:** LLaMA‑3.3 (via Together AI), OpenAI GPT-* fallback (via feature flag)  
 - **Prompt Templating:** Jinja2 / LangChain PromptTemplates  
 - **Safety Filters:** regex + PII detectors, OpenAI moderation or local classifier fallback  
 - **Tracing & Eval:** LangSmith / OpenTelemetry, custom eval scripts  
