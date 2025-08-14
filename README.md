@@ -92,7 +92,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 Set env vars:
 
 ~~~bash
-export LUKI_MODEL_BACKEND=llama3_local   # or openai
+export LUKI_MODEL_BACKEND=llama33_together   # or openai
 export OPENAI_API_KEY=sk-...             # only if using fallback
 export MEMORY_API_URL=http://localhost:8002
 export MODULES_TOKEN=dev123              # auth to call public modules
