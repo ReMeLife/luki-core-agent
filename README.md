@@ -20,7 +20,7 @@ This repo is **closed-source IP**. Anything here (prompts, heuristics, fine‑tu
 - **Tool/Skill Routing:** Decide when to call `recommend_activity`, `generate_wellbeing_report`, ELR search, etc.  
 - **Safety & Guardrails:** Redact PII, enforce consent scopes, block unsafe content, comply with care guidelines.  
 - **Prompt Pack Management:** Versioned system/instruction prompts, response formats, eval prompts.  
-- **LLM Backends:** Wrapper to selected base model(s) (e.g., LLaMA‑3 + OpenAI fallback).  
+- **LLM Backends:** Wrapper to selected base model(s) (e.g., LLaMA‑3.3 + OpenAI fallback).  
 - **Session Memory Interface:** Hooks into memory-service (vector + KV) for ELR retrieval and summary caching.  
 - **Eval & Telemetry:** Auto-eval scripts (BLEU/ROUGE for reports, human ratings logs, trace IDs, latency metrics).
 
@@ -85,17 +85,21 @@ git clone git@github.com:REMELife/luki-core-agent.git
 cd luki-core-agent
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-# Optional local model
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 ~~~
 
 Set env vars:
 
 ~~~bash
+<<<<<<< HEAD
 export LUKI_MODEL_BACKEND=llama33_together   # or openai
 export OPENAI_API_KEY=sk-...             # only if using fallback
+=======
+export LUKI_MODEL_BACKEND=together_ai     # or openai
+export TOGETHER_API_KEY=your_together_key # for LLaMA 3.3 access
+export OPENAI_API_KEY=your_openai_key     # only if using fallback
+>>>>>>> develop
 export MEMORY_API_URL=http://localhost:8002
-export MODULES_TOKEN=dev123              # auth to call public modules
+export MODULES_TOKEN=dev123               # auth to call public modules
 ~~~
 
 Run dev server (optional):
@@ -172,7 +176,7 @@ See `CONTRIBUTING.md` for full rules.
 
 ## 11. License  
 **Proprietary – All Rights Reserved**  
-Copyright © 2025 Singularities Ltd / ReMeLife.  
+Copyright 2025 Singularities Ltd / ReMeLife.  
 Unauthorized copying, modification, distribution, or disclosure is strictly prohibited.
 
 ---
