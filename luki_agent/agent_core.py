@@ -12,7 +12,7 @@ import uuid
 import asyncio
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .config import settings
 from .context_builder import ContextBuilder, ContextBuildResult
@@ -76,7 +76,7 @@ class LukiAgent:
         
         # Agent state
         self.agent_id = str(uuid.uuid4())
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(timezone.utc)
         self.conversation_count = 0
         
         print(f"LUKi Agent initialized (ID: {self.agent_id})")
@@ -377,7 +377,7 @@ class LukiAgent:
         return {
             "agent_id": self.agent_id,
             "status": "healthy" if llm_healthy else "degraded",
-            "uptime": (datetime.utcnow() - self.started_at).total_seconds(),
+            "uptime": (datetime.now(timezone.utc) - self.started_at).total_seconds(),
             "conversation_count": self.conversation_count,
             "components": {
                 "llm": "healthy" if llm_healthy else "error",
