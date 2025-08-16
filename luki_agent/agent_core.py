@@ -89,6 +89,9 @@ class LukiAgent:
         # Register cognitive tools (Phase 1C integration)
         self.tool_registry.register_cognitive_tools()
         
+        # Register engagement tools (Phase 1D integration)
+        self.tool_registry.register_engagement_tools()
+        
         # Log registered tools
         tools = self.tool_registry.list_tools()
         print(f"📋 Registered {len(tools)} tools: {[t['name'] for t in tools]}")
