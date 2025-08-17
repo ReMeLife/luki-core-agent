@@ -24,16 +24,12 @@ class LukiAgentSettings(BaseSettings):
     port: int = 9000
     
     # Model Configuration
-    model_backend: str = "llama3_hosted"  # openai, llama3_local, llama3_hosted
-    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    model_backend: str = "llama3_local"  # Use LLaMA-3-70B as specified in project docs
+    model_name: str = "meta-llama/Llama-2-70b-chat-hf"  # llama3_local, llama3_hosted
     model_temperature: float = 0.7
     max_tokens: int = 2048
     
-    # Hosted LLaMA Configuration (Together AI)
-    hosted_api_key: Optional[str] = None  # Set via LUKI_HOSTED_API_KEY environment variable
-    hosted_base_url: str = "https://api.together.xyz"
-    
-    # OpenAI Configuration (fallback only)
+    # OpenAI Configuration
     openai_api_key: Optional[str] = None
     openai_organization: Optional[str] = None
     
@@ -74,8 +70,9 @@ class LukiAgentSettings(BaseSettings):
     enable_memory_updates: bool = True
     
     class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = False
-        env_prefix = "LUKI_"
 
 
 # Global settings instance
@@ -96,16 +93,10 @@ def get_model_config() -> dict:
     """Get model-specific configuration"""
     return {
         "backend": settings.model_backend,
-        "model_name": settings.model_name,
+        "name": settings.model_name,
         "temperature": settings.model_temperature,
         "max_tokens": settings.max_tokens,
         "device": settings.device,
-        # Hosted LLaMA configuration
-        "api_key": settings.hosted_api_key,
-        "base_url": settings.hosted_base_url,
-        # OpenAI configuration (fallback)
-        "openai_api_key": settings.openai_api_key,
-        "openai_organization": settings.openai_organization,
     }
 
 
