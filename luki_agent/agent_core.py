@@ -92,6 +92,9 @@ class LukiAgent:
         # Register engagement tools (Phase 1D integration)
         self.tool_registry.register_engagement_tools()
         
+        # Register reporting tools (Phase 1A integration)
+        self.tool_registry.register_reporting_tools()
+        
         # Log registered tools
         tools = self.tool_registry.list_tools()
         print(f"📋 Registered {len(tools)} tools: {[t['name'] for t in tools]}")
