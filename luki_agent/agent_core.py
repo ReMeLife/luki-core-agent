@@ -83,16 +83,16 @@ class LukiAgent:
     
     def _register_tools(self):
         """Register all available tools"""
-        # Register memory tools
-        self.tool_registry.register_memory_tools(self.memory_retriever)
+        # Register memory tools (connects to Memory Service API)
+        self.tool_registry.register_memory_tools()
         
-        # Register cognitive tools (Phase 1C integration)
+        # Register cognitive tools (Phase 1B integration)
         self.tool_registry.register_cognitive_tools()
         
-        # Register engagement tools (Phase 1D integration)
+        # Register engagement tools (Phase 1B integration)
         self.tool_registry.register_engagement_tools()
         
-        # Register reporting tools (Phase 1A integration)
+        # Register reporting tools (Phase 1B integration)
         self.tool_registry.register_reporting_tools()
         
         # Log registered tools
