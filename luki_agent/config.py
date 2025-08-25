@@ -33,6 +33,9 @@ class LukiAgentSettings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_organization: Optional[str] = None
     
+    # Hosted Model Configuration
+    hosted_api_key: Optional[str] = None
+    
     # Local Model Configuration
     local_model_path: Optional[str] = None
     device: str = "auto"  # auto, cpu, cuda
@@ -51,12 +54,14 @@ class LukiAgentSettings(BaseSettings):
     internal_api_key: Optional[str] = None
     
     # Safety and Compliance
-    enable_safety_filter: bool = True
+    enable_safety_filters: bool = True
     enable_pii_redaction: bool = True
     enable_consent_checking: bool = True
     
     # Logging and Telemetry
     log_level: str = "INFO"
+    structured_logging: bool = True
+    enable_metrics: bool = True
     enable_tracing: bool = True
     jaeger_endpoint: Optional[str] = None
     
@@ -73,6 +78,8 @@ class LukiAgentSettings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        env_prefix = "LUKI_"
+        extra = "ignore"
 
 
 # Global settings instance
@@ -103,7 +110,7 @@ def get_model_config() -> dict:
 def get_safety_config() -> dict:
     """Get safety and compliance configuration"""
     return {
-        "enable_safety_filter": settings.enable_safety_filter,
+        "enable_safety_filters": settings.enable_safety_filters,
         "enable_pii_redaction": settings.enable_pii_redaction,
         "enable_consent_checking": settings.enable_consent_checking,
     }
