@@ -395,8 +395,10 @@ class LukiAgent:
     
     async def close(self):
         """Clean up agent resources"""
-        await self.llm_manager.close()
-        await self.memory_retriever.close()
+        if hasattr(self, 'llm_manager') and self.llm_manager:
+            await self.llm_manager.close()
+        if hasattr(self, 'memory_retriever') and self.memory_retriever:
+            await self.memory_retriever.close()
         print(f"LUKi Agent closed (ID: {self.agent_id})")
     
     def __del__(self):

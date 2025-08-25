@@ -41,7 +41,7 @@ class UserMemoryStats:
 class MemoryServiceClient:
     """Client for LUKi Memory Service API"""
     
-    def __init__(self, base_url: str = "http://localhost:8000", timeout: int = 30):
+    def __init__(self, base_url: str = "http://localhost:8002", timeout: int = 30):
         """Initialize memory service client
         
         Args:
