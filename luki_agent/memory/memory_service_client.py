@@ -6,7 +6,7 @@ Provides interface to the LUKi Memory Service for ELR retrieval and search.
 """
 
 import asyncio
-import aiohttp
+import aiohttp  # type: ignore
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -50,8 +50,8 @@ class MemoryServiceClient:
         """
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
-        self._session = None
-        self._auth_token = None
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._auth_token: Optional[str] = None
     
     async def __aenter__(self):
         """Async context manager entry"""
@@ -84,6 +84,9 @@ class MemoryServiceClient:
     
     async def _authenticate(self):
         """Get service authentication token"""
+        if not self._session:
+            raise RuntimeError("Session not initialized. Call connect() first.")
+        
         try:
             async with self._session.post(f"{self.base_url}/auth/service-token") as response:
                 if response.status == 200:
@@ -133,6 +136,9 @@ class MemoryServiceClient:
         """
         if not self._session:
             await self.connect()
+        
+        if not self._session:
+            raise RuntimeError("Failed to initialize session")
         
         request_data = {
             "user_id": user_id,
@@ -191,9 +197,12 @@ class MemoryServiceClient:
         if not self._session:
             await self.connect()
         
+        if not self._session:
+            raise RuntimeError("Failed to initialize session")
+        
         try:
             async with self._session.get(
-                f"{self.base_url}/search/memories/{user_id}/stats",
+                f"{self.base_url}/users/{user_id}/profile",
                 headers=self._get_auth_headers()
             ) as response:
                 if response.status == 200:
@@ -235,6 +244,9 @@ class MemoryServiceClient:
         if not self._session:
             await self.connect()
         
+        if not self._session:
+            raise RuntimeError("Failed to initialize session")
+        
         try:
             async with self._session.get(
                 f"{self.base_url}/search/memories/{user_id}/similar/{chunk_id}",
@@ -275,6 +287,9 @@ class MemoryServiceClient:
             if not self._session:
                 await self.connect()
             
+            if not self._session:
+                raise RuntimeError("Failed to initialize session")
+            
             async with self._session.get(f"{self.base_url}/health") as response:
                 if response.status == 200:
                     data = await response.json()
@@ -286,7 +301,7 @@ class MemoryServiceClient:
 
 
 # Singleton instance for global use
-_memory_client = None
+_memory_client: Optional[MemoryServiceClient] = None
 
 async def get_memory_client() -> MemoryServiceClient:
     """Get global memory service client instance"""
