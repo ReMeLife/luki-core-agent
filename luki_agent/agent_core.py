@@ -399,7 +399,8 @@ class LukiAgent:
             await self.llm_manager.close()
         if hasattr(self, 'memory_retriever') and self.memory_retriever:
             await self.memory_retriever.close()
-        print(f"LUKi Agent closed (ID: {self.agent_id})")
+        agent_id = getattr(self, 'agent_id', 'unknown')
+        print(f"LUKi Agent closed (ID: {agent_id})")
     
     def __del__(self):
         """Cleanup on deletion"""

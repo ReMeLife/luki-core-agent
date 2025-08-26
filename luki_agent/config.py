@@ -24,8 +24,8 @@ class LukiAgentSettings(BaseSettings):
     port: int = 9000
     
     # Model Configuration
-    model_backend: str = "llama3_local"  # Use LLaMA-3-70B as specified in project docs
-    model_name: str = "meta-llama/Llama-2-70b-chat-hf"  # llama3_local, llama3_hosted
+    model_backend: str = "llama3_hosted"  # Use LLaMA-3.3-70B hosted via Together AI
+    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # llama3_local, llama3_hosted
     model_temperature: float = 0.7
     max_tokens: int = 2048
     
@@ -100,10 +100,13 @@ def get_model_config() -> dict:
     """Get model-specific configuration"""
     return {
         "backend": settings.model_backend,
+        "model_name": settings.model_name,
         "name": settings.model_name,
         "temperature": settings.model_temperature,
         "max_tokens": settings.max_tokens,
         "device": settings.device,
+        "api_key": settings.hosted_api_key,
+        "openai_api_key": settings.openai_api_key,
     }
 
 
