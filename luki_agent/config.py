@@ -24,8 +24,8 @@ class LukiAgentSettings(BaseSettings):
     port: int = 9000
     
     # Model Configuration
-    model_backend: str = "llama3_hosted"  # Use LLaMA-3.3-70B hosted via Together AI
-    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # llama3_local, llama3_hosted
+    model_backend: str = "together_ai"  # together_ai, openai, llama3_local, llama3_hosted
+    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
     model_temperature: float = 0.7
     max_tokens: int = 2048
     
@@ -33,7 +33,10 @@ class LukiAgentSettings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_organization: Optional[str] = None
     
-    # Hosted Model Configuration
+    # Together AI Configuration
+    together_api_key: Optional[str] = None
+    
+    # Hosted Model Configuration (generic)
     hosted_api_key: Optional[str] = None
     
     # Local Model Configuration
@@ -105,7 +108,7 @@ def get_model_config() -> dict:
         "temperature": settings.model_temperature,
         "max_tokens": settings.max_tokens,
         "device": settings.device,
-        "api_key": settings.hosted_api_key,
+        "api_key": settings.together_api_key or settings.hosted_api_key,
         "openai_api_key": settings.openai_api_key,
     }
 
