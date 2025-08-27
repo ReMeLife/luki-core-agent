@@ -13,6 +13,23 @@ from typing import Dict, List, Optional, Any, AsyncGenerator
 from dataclasses import dataclass
 import json
 
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+try:
+    import openai
+except ImportError:
+    openai = None
+
+try:
+    import torch
+    import transformers
+except ImportError:
+    torch = None
+    transformers = None
+
 from .config import settings, get_model_config
 
 
@@ -72,14 +89,17 @@ class OpenAIBackend(LLMBackend):
             raise ValueError("OpenAI API key is required")
         
         # Import OpenAI client
+        if openai is None:
+            raise ImportError("openai package is required for OpenAI backend. Install with: pip install openai")
+        
         try:
-            from openai import AsyncOpenAI
+            from openai import AsyncOpenAI  # type: ignore
             self.client = AsyncOpenAI(
                 api_key=self.api_key,
                 organization=self.organization
             )
-        except ImportError:
-            raise ImportError("openai package is required for OpenAI backend")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
     
     async def generate(
         self,
@@ -162,20 +182,23 @@ class LocalLLaMABackend(LLMBackend):
             raise ValueError("Model path is required for local LLaMA backend")
         
         # Import required libraries
+        if torch is None or transformers is None:
+            raise ImportError("torch and transformers are required for local LLaMA backend. Install with: pip install torch transformers")
+        
         try:
-            import torch
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-            
             self.torch = torch
             self.tokenizer = None
             self.model = None
             self._load_model()
             
-        except ImportError:
-            raise ImportError("torch and transformers are required for local LLaMA backend")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize local LLaMA backend: {e}")
     
     def _load_model(self):
         """Load the local model"""
+        if transformers is None:
+            raise ImportError("transformers package is required")
+        
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
             
@@ -313,8 +336,10 @@ class TogetherAIBackend(LLMBackend):
             raise ValueError("Together AI API key is required")
         
         # Use httpx for API calls
+        if httpx is None:
+            raise ImportError("httpx is required for Together AI backend. Install with: pip install httpx")
+        
         try:
-            import httpx
             self.client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
@@ -324,8 +349,8 @@ class TogetherAIBackend(LLMBackend):
                 timeout=120.0  # Longer timeout for large models
             )
             print(f"✅ Together AI backend initialized with model: {self.model_name}")
-        except ImportError:
-            raise ImportError("httpx is required for Together AI backend")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Together AI client: {e}")
     
     async def generate(
         self,
@@ -370,16 +395,18 @@ class TogetherAIBackend(LLMBackend):
                 }
             )
             
-        except httpx.HTTPStatusError as e:
-            error_detail = ""
-            try:
-                error_data = e.response.json()
-                error_detail = error_data.get("error", {}).get("message", str(e))
-            except:
-                error_detail = str(e)
-            raise RuntimeError(f"Together AI API error ({e.response.status_code}): {error_detail}")
         except Exception as e:
-            raise RuntimeError(f"Together AI generation error: {e}")
+            # Handle httpx.HTTPStatusError if httpx is available
+            if httpx and hasattr(httpx, 'HTTPStatusError') and isinstance(e, httpx.HTTPStatusError):
+                error_detail = ""
+                try:
+                    error_data = e.response.json()
+                    error_detail = error_data.get("error", {}).get("message", str(e))
+                except:
+                    error_detail = str(e)
+                raise RuntimeError(f"Together AI API error ({e.response.status_code}): {error_detail}")
+            else:
+                raise RuntimeError(f"Together AI generation error: {e}")
     
     async def generate_stream(
         self,
@@ -421,16 +448,18 @@ class TogetherAIBackend(LLMBackend):
                         except json.JSONDecodeError:
                             continue
                             
-        except httpx.HTTPStatusError as e:
-            error_detail = ""
-            try:
-                error_data = e.response.json()
-                error_detail = error_data.get("error", {}).get("message", str(e))
-            except:
-                error_detail = str(e)
-            raise RuntimeError(f"Together AI streaming error ({e.response.status_code}): {error_detail}")
         except Exception as e:
-            raise RuntimeError(f"Together AI streaming error: {e}")
+            # Handle httpx.HTTPStatusError if httpx is available
+            if httpx and hasattr(httpx, 'HTTPStatusError') and isinstance(e, httpx.HTTPStatusError):
+                error_detail = ""
+                try:
+                    error_data = e.response.json()
+                    error_detail = error_data.get("error", {}).get("message", str(e))
+                except:
+                    error_detail = str(e)
+                raise RuntimeError(f"Together AI streaming error ({e.response.status_code}): {error_detail}")
+            else:
+                raise RuntimeError(f"Together AI streaming error: {e}")
     
     async def close(self):
         """Close HTTP client"""
@@ -450,8 +479,10 @@ class HostedLLaMABackend(LLMBackend):
             raise ValueError("API key is required for hosted LLaMA backend")
         
         # Use httpx for API calls
+        if httpx is None:
+            raise ImportError("httpx is required for hosted LLaMA backend. Install with: pip install httpx")
+        
         try:
-            import httpx
             self.client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
@@ -460,8 +491,8 @@ class HostedLLaMABackend(LLMBackend):
                 },
                 timeout=60.0
             )
-        except ImportError:
-            raise ImportError("httpx is required for hosted LLaMA backend")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize hosted LLaMA client: {e}")
     
     async def generate(
         self,
@@ -612,8 +643,20 @@ class LLMManager:
                     stop_sequences=stop_sequences,
                     **kwargs
                 )
-                async for chunk in stream_generator:
-                    yield chunk
+                # Properly handle the async generator
+                if hasattr(stream_generator, '__aiter__'):
+                    async for chunk in stream_generator:
+                        yield chunk
+                else:
+                    # Fallback if not properly async iterable
+                    response = await self.backend.generate(
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        stop_sequences=stop_sequences,
+                        **kwargs
+                    )
+                    yield response.content
             except Exception as e:
                 # If streaming fails, fallback to regular generation
                 response = await self.backend.generate(
