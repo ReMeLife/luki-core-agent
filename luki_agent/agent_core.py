@@ -19,6 +19,7 @@ from .context_builder import ContextBuilder, ContextBuildResult
 from .llm_backends import LLMManager, ModelResponse
 from .memory.retriever import MemoryRetriever
 from .memory.session_store import SessionStore, SessionState
+from .memory.memory_service_client import get_memory_client, MemorySearchResult
 from .prompts_system import get_system_prompt, get_instruction_template
 from .safety_chain import SafetyChain
 from .tools.registry import ToolRegistry
@@ -35,6 +36,7 @@ class AgentResponse:
     model_response: Optional[ModelResponse] = None
     tools_used: Optional[List[str]] = None
     safety_filtered: bool = False
+    memory_results: Optional[List[MemorySearchResult]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -123,8 +125,11 @@ class LukiAgent:
                 request.metadata
             )
             
-            # Build context using the 5-layer model
-            context_result = await self._build_context(request, session)
+            # Retrieve memory context for personalization
+            memory_results = await self._retrieve_memory_context(request)
+            
+            # Build context using the 5-layer model with memory integration
+            context_result = await self._build_context(request, session, memory_results)
             
             # Apply safety filtering to user input
             filtered_input, safety_filtered = await self.safety_chain.filter_input(
@@ -137,7 +142,7 @@ class LukiAgent:
                 safety_response = await self._create_safety_response(request, session)
                 return safety_response
             
-            # Generate response using LLM
+            # Generate response using LLM with memory-enhanced context
             if request.streaming:
                 # For streaming, we'll return the first chunk and handle streaming separately
                 response_content = ""
@@ -179,10 +184,12 @@ class LukiAgent:
                 context_used=context_result,
                 model_response=model_response if not request.streaming else None,
                 safety_filtered=response_filtered,
+                memory_results=memory_results,
                 metadata={
                     "handler_type": request.handler_type,
                     "processing_time": (datetime.utcnow() - start_time).total_seconds(),
-                    "conversation_count": self.conversation_count
+                    "conversation_count": self.conversation_count,
+                    "memory_chunks_used": len(memory_results) if memory_results else 0
                 }
             )
             
@@ -217,8 +224,11 @@ class LukiAgent:
                 request.metadata
             )
             
-            # Build context
-            context_result = await self._build_context(request, session)
+            # Retrieve memory context for streaming
+            memory_results = await self._retrieve_memory_context(request)
+            
+            # Build context with memory integration
+            context_result = await self._build_context(request, session, memory_results)
             
             # Apply safety filtering
             filtered_input, safety_filtered = await self.safety_chain.filter_input(
@@ -262,19 +272,32 @@ class LukiAgent:
     async def _build_context(
         self, 
         request: ConversationRequest, 
-        session: SessionState
+        session: SessionState,
+        memory_results: Optional[List[MemorySearchResult]] = None
     ) -> ContextBuildResult:
-        """Build context using the 5-layer model"""
+        """Build context using the 5-layer model with memory integration"""
         conversation_history = self.session_store.get_conversation_history(
             session.session_id,
             limit=settings.conversation_buffer_size
         )
+        
+        # Convert memory results to context chunks for Layer 2 (Retrieved Facts)
+        memory_context = []
+        if memory_results:
+            for result in memory_results:
+                memory_context.append({
+                    "content": result.content,
+                    "similarity_score": result.similarity_score,
+                    "metadata": result.metadata,
+                    "created_at": result.created_at.isoformat()
+                })
         
         context_result = await self.context_builder.build(
             user_input=request.user_input,
             user_id=request.user_id,
             conversation_history=conversation_history,
             handler_type=request.handler_type,
+            memory_context=memory_context,
             **(request.context_override or {})
         )
         
@@ -289,6 +312,33 @@ class LukiAgent:
             stop_sequences=["User:", "Human:"]
         ):
             yield chunk
+    
+    async def _retrieve_memory_context(self, request: ConversationRequest) -> List[MemorySearchResult]:
+        """Retrieve relevant memory context from ELR for personalization"""
+        try:
+            memory_client = await get_memory_client()
+            
+            # Search for relevant memories based on user input
+            memory_results = await memory_client.search_memories(
+                user_id=request.user_id,
+                query=request.user_input,
+                k=settings.retrieval_top_k,  # From config
+                content_types=["personal_info", "preferences", "experiences", "goals"],
+                sensitivity_filter=["low", "medium"]  # Exclude high sensitivity for general chat
+            )
+            
+            if memory_results:
+                print(f"🧠 Retrieved {len(memory_results)} memory chunks for user {request.user_id}")
+                for result in memory_results[:2]:  # Log first 2 for debugging
+                    print(f"   - {result.content[:100]}... (score: {result.similarity_score:.3f})")
+            else:
+                print(f"🧠 No memory context found for user {request.user_id}")
+            
+            return memory_results
+            
+        except Exception as e:
+            print(f"⚠️ Memory retrieval failed: {e}")
+            return []  # Graceful degradation - continue without memory context
     
     async def _create_safety_response(
         self, 

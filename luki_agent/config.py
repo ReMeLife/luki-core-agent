@@ -49,7 +49,7 @@ class LukiAgentSettings(BaseSettings):
     conversation_buffer_size: int = 20
     
     # Memory Service Configuration
-    memory_service_url: str = "http://localhost:8002"
+    memory_service_url: str = "http://localhost:8000"
     memory_service_timeout: int = 30
     
     # Authentication
