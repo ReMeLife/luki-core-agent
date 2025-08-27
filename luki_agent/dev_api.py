@@ -5,10 +5,13 @@ FastAPI server providing HTTP endpoints for testing and development.
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, AsyncGenerator
 import logging
 import traceback
+import json
+import asyncio
 
 from .config import settings
 
@@ -110,6 +113,80 @@ async def chat(request: ChatRequest):
             model_used="fallback",
             metadata={"error": str(e)}
         )
+
+async def generate_streaming_response(prompt: str, user_id: str, session_id: str) -> AsyncGenerator[str, None]:
+    """Generate streaming response from LLM"""
+    try:
+        # Import here to avoid circular imports
+        from .llm_backends import LLMManager
+        
+        # Initialize LLM manager
+        llm_manager = LLMManager()
+        
+        # For now, simulate streaming by chunking the response
+        # In a full implementation, this would use the LLM's streaming capability
+        logger.info(f"Generating streaming response using {settings.model_backend} backend...")
+        response = await llm_manager.generate(
+            prompt=prompt,
+            max_tokens=settings.max_tokens,
+            temperature=settings.model_temperature
+        )
+        
+        # Simulate streaming by sending response in chunks
+        content = response.content
+        words = content.split()
+        
+        for i, word in enumerate(words):
+            chunk_data = {
+                "token": word + (" " if i < len(words) - 1 else ""),
+                "session_id": session_id,
+                "user_id": user_id
+            }
+            yield f"data: {json.dumps(chunk_data)}\n\n"
+            await asyncio.sleep(0.05)  # Small delay to simulate streaming
+        
+        # Send completion signal
+        yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        
+    except Exception as e:
+        logger.error(f"Streaming generation error: {e}")
+        error_data = {
+            "error": str(e),
+            "session_id": session_id,
+            "user_id": user_id
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
+
+@app.post("/v1/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint for conversing with LUKi
+    
+    Returns server-sent events with streaming response tokens.
+    """
+    try:
+        logger.info(f"Streaming chat request from user {request.user_id}, session {request.session_id}")
+        logger.info(f"Message: {request.message}")
+        
+        # Build prompt for streaming
+        prompt = f"You are LUKi, a helpful AI assistant. User message: {request.message}"
+        
+        # Return streaming response
+        return StreamingResponse(
+            generate_streaming_response(prompt, request.user_id, request.session_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Streaming chat endpoint error: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/config")
 async def get_config():
