@@ -300,8 +300,145 @@ class LocalLLaMABackend(LLMBackend):
                 self.torch.cuda.empty_cache()
 
 
+class TogetherAIBackend(LLMBackend):
+    """Together AI LLaMA 3.3 70B backend"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.model_name = config.get("model_name", "meta-llama/Llama-3.3-70B-Instruct-Turbo")
+        self.api_key = config.get("api_key")
+        self.base_url = "https://api.together.xyz"
+        
+        if not self.api_key:
+            raise ValueError("Together AI API key is required")
+        
+        # Use httpx for API calls
+        try:
+            import httpx
+            self.client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0  # Longer timeout for large models
+            )
+            print(f"✅ Together AI backend initialized with model: {self.model_name}")
+        except ImportError:
+            raise ImportError("httpx is required for Together AI backend")
+    
+    async def generate(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs
+    ) -> ModelResponse:
+        """Generate response using Together AI API"""
+        try:
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "max_tokens": max_tokens or self.config.get("max_tokens", 2048),
+                "temperature": temperature or self.config.get("temperature", 0.7),
+                "stop": stop_sequences or [],
+                "top_p": kwargs.get("top_p", 0.9),
+                "repetition_penalty": kwargs.get("repetition_penalty", 1.1),
+                **{k: v for k, v in kwargs.items() if k not in ["top_p", "repetition_penalty"]}
+            }
+            
+            response = await self.client.post("/v1/completions", json=payload)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if "choices" not in data or not data["choices"]:
+                raise RuntimeError("No choices returned from Together AI API")
+            
+            choice = data["choices"][0]
+            
+            return ModelResponse(
+                content=choice.get("text", "").strip(),
+                usage=data.get("usage"),
+                model=data.get("model", self.model_name),
+                finish_reason=choice.get("finish_reason"),
+                metadata={
+                    "response_id": data.get("id"),
+                    "provider": "together_ai",
+                    "model_used": self.model_name
+                }
+            )
+            
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_data = e.response.json()
+                error_detail = error_data.get("error", {}).get("message", str(e))
+            except:
+                error_detail = str(e)
+            raise RuntimeError(f"Together AI API error ({e.response.status_code}): {error_detail}")
+        except Exception as e:
+            raise RuntimeError(f"Together AI generation error: {e}")
+    
+    async def generate_stream(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs
+    ) -> AsyncGenerator[str, None]:
+        """Generate streaming response using Together AI API"""
+        try:
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "max_tokens": max_tokens or self.config.get("max_tokens", 2048),
+                "temperature": temperature or self.config.get("temperature", 0.7),
+                "stop": stop_sequences or [],
+                "stream": True,
+                "top_p": kwargs.get("top_p", 0.9),
+                "repetition_penalty": kwargs.get("repetition_penalty", 1.1),
+                **{k: v for k, v in kwargs.items() if k not in ["top_p", "repetition_penalty", "stream"]}
+            }
+            
+            async with self.client.stream("POST", "/v1/completions", json=payload) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]  # Remove "data: " prefix
+                        if data_str.strip() == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            if "choices" in data and data["choices"]:
+                                text = data["choices"][0].get("text", "")
+                                if text:
+                                    yield text
+                        except json.JSONDecodeError:
+                            continue
+                            
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_data = e.response.json()
+                error_detail = error_data.get("error", {}).get("message", str(e))
+            except:
+                error_detail = str(e)
+            raise RuntimeError(f"Together AI streaming error ({e.response.status_code}): {error_detail}")
+        except Exception as e:
+            raise RuntimeError(f"Together AI streaming error: {e}")
+    
+    async def close(self):
+        """Close HTTP client"""
+        await self.client.aclose()
+
+
 class HostedLLaMABackend(LLMBackend):
-    """Hosted LLaMA backend (e.g., Together AI, Replicate)"""
+    """Generic hosted LLaMA backend (e.g., Replicate, other providers)"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -426,8 +563,12 @@ class LLMManager:
             self.backend = LocalLLaMABackend(self.config)
         elif backend_type == "llama3_hosted":
             self.backend = HostedLLaMABackend(self.config)
+        elif backend_type == "together_ai":
+            self.backend = TogetherAIBackend(self.config)
         else:
             raise ValueError(f"Unknown model backend: {backend_type}")
+        
+        print(f"🧠 LLM Manager initialized with backend: {backend_type}")
     
     async def generate(
         self,
