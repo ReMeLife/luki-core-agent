@@ -22,6 +22,7 @@ from ..memory.session_store import SessionStore, SessionState
 from ..memory.session_store import ConversationTurn as SessionConversationTurn
 from .avatar_personality import LukiAvatarPersonality, PersonalityContext
 from .personality_templates import PersonalityPromptTemplates
+from ..knowledge.project_glossary import ProjectKnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,13 @@ class LukiConversationChain:
     - LLM generation and response assembly
     """
     
-    def __init__(self):
+    def __init__(self, memory_service_client=None):
         self.llm_manager = LLMManager()
         self.session_store = SessionStore()  # Redis-based session storage
         self.avatar_personality = LukiAvatarPersonality()
         self.prompt_templates = PersonalityPromptTemplates()
+        self.memory_service_client = memory_service_client  # Optional memory service integration
+        self.knowledge_base = ProjectKnowledgeBase()  # Comprehensive glossary and platform knowledge
         self.chain_id = f"luki_chain_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.conversation_count = 0
         
@@ -150,13 +153,13 @@ class LukiConversationChain:
         additional_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Build rich conversation context
+        Build rich conversation context with Context Block Protocol (CBP)
         
-        This will integrate with:
-        - ELR memory retrieval (future)
-        - User preferences and history
-        - Conversation history
-        - Environmental context
+        Integrates:
+        - ELR memory retrieval with health checks
+        - Glossary for token definitions
+        - Platform KB for documentation
+        - Gap notices for missing context
         """
         context = {
             "user_id": session.user_id,
@@ -176,13 +179,60 @@ class LukiConversationChain:
         if additional_context:
             context.update(additional_context)
         
-        # TODO: Add ELR memory retrieval
-        # context["elr_memories"] = await self._retrieve_elr_memories(message, session.user_id)
+        # Retrieve ELR memories (mandatory for personal queries)
+        elr_data = None
+        is_personal = any(term in message.lower() for term in ['my', 'me', 'i\'m', 'elizabeth'])
+        if is_personal and self.memory_service_client:
+            try:
+                elr_results = await self.memory_service_client.search_memories(
+                    user_id=session.user_id,
+                    query=message,
+                    top_k=8
+                )
+                if elr_results:
+                    elr_data = [{
+                        'title': mem.get('content', '')[:50],
+                        'synopsis': mem.get('content', '')[:120],
+                        'date': mem.get('metadata', {}).get('timestamp', ''),
+                        'confidence': mem.get('score', 0.0)
+                    } for mem in elr_results]
+                    context["elr_memories"] = elr_data
+                else:
+                    context["elr_gap"] = True
+            except Exception as e:
+                logger.warning(f"ELR retrieval failed: {e}")
+                context["elr_gap"] = True
+        elif is_personal and not self.memory_service_client:
+            # Personal query but no memory service available
+            context["elr_gap"] = True
+            logger.warning("Personal query detected but memory service not available")
         
-        # TODO: Add user preferences
-        # context["user_preferences"] = await self._get_user_preferences(session.user_id)
+        # Always load comprehensive glossary and platform knowledge
+        glossary = self.knowledge_base.get_glossary()
+        platform_kb = self.knowledge_base.get_platform_knowledge()
         
-        logger.info(f"Built conversation context with {len(context)} elements")
+        # Check for specific token/platform queries
+        is_token_query = any(term in message.lower() for term in ['cap', 'reme', 'luki', 'token', 'remelife', 'remecare'])
+        if is_token_query:
+            # Extract relevant glossary terms
+            relevant_terms = self._extract_relevant_glossary_terms(message, glossary)
+            context["glossary"] = relevant_terms
+        else:
+            # Include essential glossary terms for context
+            context["glossary"] = {k: glossary[k] for k in ['LUKi', 'ReMeLife', 'ELR', 'CAP', 'REME'] if k in glossary}
+        
+        # Always include platform knowledge
+        context["platform_kb"] = platform_kb
+        
+        # Build Context Blocks using CBP
+        context["context_blocks"] = self.prompt_templates.build_context_blocks(
+            elr_data=elr_data,
+            glossary_data=context.get("glossary"),
+            platform_kb=[platform_kb] if platform_kb else None,
+            query_type=message
+        )
+        
+        logger.info(f"Built conversation context with CBP: ELR={bool(elr_data)}, Glossary={bool(context.get('glossary'))}, KB={bool(platform_kb)}")
         return context
     
     async def _apply_avatar_personality(self, context: Dict[str, Any]) -> str:
@@ -246,14 +296,22 @@ class LukiConversationChain:
                 }
             )
             
-            # Combine system prompt with conversation context
+            # Build context blocks from retrieved data
+            context_blocks = self.prompt_templates.build_context_blocks(
+                elr_data=context.get("elr_memories"),
+                glossary_data=context.get("glossary"),
+                platform_kb=context.get("platform_kb"),
+                query_type=user_message
+            )
+            
+            # Combine system prompt with context blocks
             full_prompt = f"""{system_prompt}
 
-{conversation_context}
+{context_blocks}
 
-Current User Message: {user_message}
+User: {user_message}
 
-Please respond as LUKi, maintaining your personality and using the context provided above."""
+Assistant:"""
             
             logger.info(f"Applied sophisticated avatar personality with {len(personality_response.core_traits)} traits and {personality_response.response_tone.value} tone")
             return full_prompt
@@ -286,23 +344,120 @@ Please respond as LUKi, maintaining your personality and using the context provi
         return prompt
     
     async def _generate_llm_response(self, prompt: str) -> str:
-        """Generate response using LLM with rich context"""
+        """Generate response using LLM with strict output validation"""
         try:
-            logger.info("Generating LLM response with rich context...")
-            response = await self.llm_manager.generate(
+            # Generate response using LLMManager's generate method
+            model_response = await self.llm_manager.generate(
                 prompt=prompt,
-                max_tokens=settings.max_tokens,
-                temperature=settings.model_temperature
+                max_tokens=512,
+                temperature=0.7
             )
             
-            logger.info(f"Generated response: {response.content[:100]}...")
-            return response.content
+            # Extract content from ModelResponse
+            response_text = model_response.content if hasattr(model_response, 'content') else str(model_response)
             
+            # Validate response doesn't contain self-referential conversation patterns
+            if self._contains_conversation_loop(response_text):
+                logger.warning("Detected conversation loop pattern in response, filtering...")
+                response_text = self._filter_conversation_loops(response_text)
+            
+            logger.info(f"LLM response generated: {len(response_text)} characters")
+            return response_text
         except Exception as e:
-            logger.error(f"LLM generation error: {e}")
-            return "I apologize, but I'm experiencing technical difficulties right now. Please try again in a moment."
+            logger.error(f"Error generating LLM response: {e}")
+            raise
+    
+    def _extract_relevant_glossary_terms(self, message: str, glossary: Dict[str, str]) -> Dict[str, str]:
+        """Extract glossary terms relevant to the user's message."""
+        relevant_terms = {}
+        message_lower = message.lower()
+        
+        # Check each glossary term for relevance
+        for term, definition in glossary.items():
+            term_lower = term.lower()
+            # Check if term appears in message or if it's a related concept
+            if (term_lower in message_lower or 
+                (term_lower == 'cap' and any(w in message_lower for w in ['care', 'action', 'points', 'earn'])) or
+                (term_lower == 'reme' and any(w in message_lower for w in ['token', 'reward', 'convert'])) or
+                (term_lower == 'elr' and any(w in message_lower for w in ['memory', 'record', 'life', 'personal'])) or
+                (term_lower == 'remecare' and any(w in message_lower for w in ['activity', 'dementia', 'care']))):
+                relevant_terms[term] = definition
+        
+        # Always include core terms if nothing specific found
+        if not relevant_terms:
+            for key in ['LUKi', 'ReMeLife', 'ELR']:
+                if key in glossary:
+                    relevant_terms[key] = glossary[key]
+        
+        return relevant_terms
     
     async def _post_process_response(self, response: str) -> str:
+        """
+        Post-process and validate LLM response
+        
+        Ensures:
+        - No role confusion or inner monologue
+        - Proper response structure
+        - No fictional user messages
+        """
+        try:
+            # Remove any accidental role reversals or inner monologue
+            lines_to_remove = []
+            lines = response.split('\n')
+            
+            for i, line in enumerate(lines):
+                # Detect and remove internal dialogue patterns
+                if any(pattern in line.lower() for pattern in [
+                    "thinking:", "thought:", "internal:", "note to self:",
+                    "as an ai", "i am thinking", "let me think"
+                ]):
+                    lines_to_remove.append(i)
+                    
+                # Detect and remove user impersonation
+                if any(pattern in line for pattern in [
+                    "User:", "Human:", "You:",
+                    "Elizabeth:", "Patient:"
+                ]) and not line.startswith("From your ELR"):
+                    lines_to_remove.append(i)
+            
+            # Remove problematic lines
+            filtered_lines = [line for i, line in enumerate(lines) if i not in lines_to_remove]
+            cleaned_response = '\n'.join(filtered_lines)
+            
+            # Ensure response follows the structure if not already formatted
+            if "**Main Response**" not in cleaned_response:
+                # Apply default structure
+                cleaned_response = self._apply_response_structure(cleaned_response)
+            
+            logger.info(f"Post-processed response: removed {len(lines_to_remove)} problematic lines")
+            return cleaned_response
+            
+        except Exception as e:
+            logger.error(f"Response post-processing error: {e}")
+            return response
+    
+    def _apply_response_structure(self, raw_response: str) -> str:
+        """Apply the default response structure to unformatted responses"""
+        # Parse raw response to extract main points
+        sentences = raw_response.split('. ')
+        main_response = '. '.join(sentences[:3]) if len(sentences) >= 3 else raw_response
+        
+        # Create structured response
+        structured = f"""**Main Response**
+{main_response}
+
+**Actionable Steps**
+• Review your recent ELR data for patterns
+• Consider the context provided above
+• Let me know if you need specific guidance
+
+**Context Anchors**
+• Response based on current conversation context
+
+**Conclusion**
+How can I assist you further with your request?"""
+        
+        return structured
         """
         Post-process the LLM response
         
@@ -376,7 +531,11 @@ Please respond as LUKi, maintaining your personality and using the context provi
                 "conversation_turn": len(session.conversation_history),
                 "session_created": session.created_at.isoformat(),
                 "processing_chain": "full_orchestration",
-                "chain_id": self.chain_id
+                "chain_id": self.chain_id,
+                "elr_retrieved": bool(context.get("elr_memories")),
+                "elr_gap": context.get("elr_gap", False),
+                "glossary_terms_used": len(context.get("glossary", {})),
+                "context_blocks_generated": bool(context.get("context_blocks"))
             }
         }
     
@@ -401,21 +560,57 @@ Please respond as LUKi, maintaining your personality and using the context provi
             }
         }
     
-    def _format_conversation_history(self, history: List[SessionConversationTurn]) -> str:
+    def _load_glossary(self) -> Dict[str, str]:
+        """Load glossary definitions for tokens and terms"""
+        return {
+            "CAP": "Care Action Points - Earned for performing care actions, unlimited supply, non-transferable",
+            "REME": "Primary utility token for purchases, fixed supply, tradeable on exchanges",
+            "LUKi": "AI participation rewards in federated learning system",
+            "ELR": "Electronic Life Records - Proprietary data architecture capturing activities, preferences, habits, life stories",
+            "ReMeLife": "Web3-based care ecosystem rewarding digital care actions through tokens",
+            "ReMeCare": "B2B care provider app with activity-based digital care (formerly RemindMeCare)"
+        }
+    
+    def _load_platform_kb(self, query: str) -> List[Dict[str, Any]]:
+        """Load platform knowledge base items relevant to query"""
+        # This would normally do semantic search; for now return static docs
+        return [
+            {
+                "doc_title": "ReMeLife Whitepaper",
+                "snippet": "ReMeLife uses a tri-token model: CAPs for care actions, REME for utility, and LUKi for AI participation",
+                "doc_id": "whitepaper_v3"
+            },
+            {
+                "doc_title": "Token Economics",
+                "snippet": "The tri-token configuration ensures sustainable rewards for care providers while maintaining economic stability",
+                "doc_id": "tokenomics_v2"
+            }
+        ]
+    
+    def _format_conversation_history(self, history: List[SessionConversationTurn]) -> List[Dict[str, Any]]:
         """Format conversation history for prompt inclusion"""
         if not history:
-            return "This is the start of your conversation with this user."
+            return [{"text": "This is the start of your conversation with this user."}]
         
         formatted_history = []
         for i, turn in enumerate(history[-5:], 1):  # Last 5 turns
-            formatted_history.append(f"Turn {i}:")
-            if turn.role == "user":
-                formatted_history.append(f"User: {turn.content}")
+            # Handle both object and dict formats
+            if isinstance(turn, dict):
+                formatted_history.append({
+                    "turn": i,
+                    "role": turn.get("role", "user"),
+                    "content": turn.get("content", ""),
+                    "timestamp": turn.get("timestamp")
+                })
             else:
-                formatted_history.append(f"LUKi: {turn.content}")
-            formatted_history.append("")
+                formatted_history.append({
+                    "turn": i,
+                    "role": turn.role,
+                    "content": turn.content,
+                    "timestamp": turn.timestamp.isoformat() if hasattr(turn, 'timestamp') else None
+                })
         
-        return "\n".join(formatted_history)
+        return formatted_history
     
     def _infer_user_mood(self, user_message: str) -> Optional[str]:
         """Infer user mood from their message"""
@@ -489,6 +684,48 @@ Please respond as LUKi, maintaining your personality and using the context provi
             return 'reflection'
         
         return 'general_conversation'
+    
+    def _contains_conversation_loop(self, response: str) -> bool:
+        """Detect if response contains self-referential conversation patterns"""
+        loop_indicators = [
+            "User:",
+            "LUKi:",
+            "Human:",
+            "Assistant:",
+            "You said:",
+            "I replied:",
+            "Then you",
+            "Then I",
+            "Our conversation",
+            "In our chat",
+            "Earlier you mentioned",
+            "As we discussed"
+        ]
+        
+        response_lower = response.lower()
+        return any(indicator.lower() in response_lower for indicator in loop_indicators)
+    
+    def _filter_conversation_loops(self, response: str) -> str:
+        """Remove conversation loop patterns from response"""
+        lines = response.split('\n')
+        filtered_lines = []
+        
+        for line in lines:
+            line_lower = line.lower().strip()
+            # Skip lines that look like conversation transcripts
+            if any(pattern in line_lower for pattern in ['user:', 'luki:', 'human:', 'assistant:', 'you said:', 'i replied:']):
+                continue
+            # Skip empty lines after filtering
+            if line.strip():
+                filtered_lines.append(line)
+        
+        filtered_response = '\n'.join(filtered_lines)
+        
+        # If we filtered too much, provide a safe fallback
+        if len(filtered_response.strip()) < 20:
+            return "I understand what you're asking about. Let me help you with that in a clear and direct way."
+        
+        return filtered_response
     
     async def _apply_basic_personality(self, context: Dict[str, Any]) -> str:
         """Fallback basic personality prompt if sophisticated system fails"""
