@@ -1,10 +1,7 @@
 """
-LLM Backend Implementations for LUKi Agent
+LLM Backend Implementations for AI Agent
 
-Supports multiple model backends:
-- OpenAI GPT models (GPT-3.5, GPT-4)
-- Local LLaMA models via transformers
-- Hosted LLaMA models via API
+Supports multiple configurable model backends with fallback support.
 """
 
 import asyncio
@@ -324,11 +321,11 @@ class LocalLLaMABackend(LLMBackend):
 
 
 class TogetherAIBackend(LLMBackend):
-    """Together AI LLaMA 3.3 70B backend"""
+    """Together AI GPT-OSS 120B backend"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.model_name = config.get("model_name", "meta-llama/Llama-3.3-70B-Instruct-Turbo")
+        self.model_name = config.get("model_name", "openai/gpt-oss-120b")
         self.api_key = config.get("api_key")
         self.base_url = "https://api.together.xyz"
         
