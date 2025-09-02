@@ -3,7 +3,7 @@ Generic Personality Templates Stub
 Replace with your own conversation templates and prompt engineering.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 class PersonalityPromptTemplates:
     """
@@ -70,7 +70,7 @@ Respond in a {tone} manner using {language} language."""
         
         return templates.get(template_type, templates["default"])
     
-    def format_prompt(self, template_name: str, context: Dict[str, str] = None) -> str:
+    def format_prompt(self, template_name: str, context: Optional[Dict[str, str]] = None) -> str:
         """
         Format prompt with context.
         

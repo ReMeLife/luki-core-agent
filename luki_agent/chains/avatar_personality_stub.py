@@ -3,7 +3,7 @@ Generic Avatar Personality Stub
 Replace with your own personality framework and conversation logic.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, List, Any, Optional
 from enum import Enum
 
 class PersonalityTrait(Enum):
@@ -22,7 +22,7 @@ class CommunicationStyle(Enum):
 
 class PersonalityContext:
     """Context for personality decisions"""
-    def __init__(self, user_message: str, conversation_history: List[Dict] = None):
+    def __init__(self, user_message: str, conversation_history: Optional[List[Dict]] = None):
         self.user_message = user_message
         self.conversation_history = conversation_history or []
         self.detected_mood = "neutral"
@@ -90,7 +90,7 @@ class LukiAvatarPersonality:
         self, 
         context: PersonalityContext,
         user_message: str,
-        conversation_history: List[Dict] = None
+        conversation_history: Optional[List[Dict]] = None
     ) -> PersonalityResponse:
         """
         Generate personality response configuration.

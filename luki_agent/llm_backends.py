@@ -202,6 +202,9 @@ class LocalLLaMABackend(LLMBackend):
             print(f"Loading model from {self.model_path}...")
             
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+            if not self.model_path:
+                raise ValueError("Model path is required for local model loading")
+            
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 torch_dtype=self.torch.float16 if self.torch.cuda.is_available() else self.torch.float32,
@@ -640,12 +643,35 @@ class LLMManager:
                     stop_sequences=stop_sequences,
                     **kwargs
                 )
-                # Properly handle the async generator
-                if hasattr(stream_generator, '__aiter__'):
-                    async for chunk in stream_generator:
-                        yield chunk
-                else:
-                    # Fallback if not properly async iterable
+                # Handle different types of stream generators
+                import inspect
+                from typing import AsyncGenerator, Any
+                
+                try:
+                    if inspect.iscoroutine(stream_generator):
+                        # Await the coroutine to get the actual async generator
+                        actual_generator = await stream_generator
+                        if hasattr(actual_generator, '__aiter__'):
+                            async for chunk in actual_generator:
+                                yield chunk
+                        else:
+                            yield str(actual_generator)
+                    elif hasattr(stream_generator, '__aiter__'):
+                        # It's already an async generator
+                        async for chunk in stream_generator:  # type: ignore
+                            yield chunk
+                    else:
+                        # Fallback to single response
+                        response = await self.backend.generate(
+                            prompt=prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            stop_sequences=stop_sequences,
+                            **kwargs
+                        )
+                        yield response.content
+                except Exception:
+                    # Final fallback
                     response = await self.backend.generate(
                         prompt=prompt,
                         max_tokens=max_tokens,
