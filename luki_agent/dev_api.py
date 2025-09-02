@@ -14,7 +14,7 @@ import json
 import asyncio
 
 from .config import settings
-from .prompts_enhanced import get_enhanced_system_prompt, format_llama_prompt, get_context_strategy
+from .prompts_enhanced import get_enhanced_system_prompt, format_gptoss_prompt, get_context_strategy
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -118,8 +118,8 @@ async def chat(request: ChatRequest):
         if request.context and "conversation_history" in request.context:
             conversation_history = request.context["conversation_history"]
         
-        # Format using proper LLaMA 3.3 structure
-        full_prompt = format_llama_prompt(
+        # Format using proper GPT-OSS structure
+        full_prompt = format_gptoss_prompt(
             system_prompt=system_prompt,
             conversation_history=conversation_history,
             current_message=request.message,
@@ -260,8 +260,8 @@ async def chat_stream(request: ChatRequest):
         if request.context and "conversation_history" in request.context:
             conversation_history = request.context["conversation_history"]
         
-        # Format using proper LLaMA 3.3 structure
-        full_prompt = format_llama_prompt(
+        # Format using proper GPT-OSS structure
+        full_prompt = format_gptoss_prompt(
             system_prompt=system_prompt,
             conversation_history=conversation_history,
             current_message=request.message,

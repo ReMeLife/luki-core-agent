@@ -277,6 +277,62 @@ class MemoryServiceClient:
             logger.error(f"Error finding similar memories: {e}")
             return []
     
+    async def search_project_knowledge(
+        self,
+        query: str,
+        k: int = 5
+    ) -> List[MemorySearchResult]:
+        """Search project knowledge and system context
+        
+        Args:
+            query: Search query
+            k: Number of results to return
+            
+        Returns:
+            List of project knowledge search results
+        """
+        if not self._session:
+            await self.connect()
+        
+        if not self._session:
+            raise RuntimeError("Failed to initialize session")
+        
+        request_data = {
+            "query": query,
+            "k": k,
+            "user_id": "system"  # System context search
+        }
+        
+        try:
+            async with self._session.post(
+                f"{self.base_url}/search/project-knowledge",
+                json=request_data,
+                headers=self._get_auth_headers()
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("success", False):
+                        results = []
+                        for result in data.get("results", []):
+                            results.append(MemorySearchResult(
+                                content=result["content"],
+                                similarity_score=result.get("similarity_score", 0.0),
+                                metadata=result.get("metadata", {}),
+                                chunk_id=result.get("chunk_id", ""),
+                                created_at=datetime.fromisoformat(result["created_at"].replace('Z', '+00:00')) if result.get("created_at") else datetime.utcnow()
+                            ))
+                        logger.info(f"Retrieved {len(results)} project knowledge results")
+                        return results
+                    else:
+                        logger.warning(f"Project knowledge search failed: {data.get('error', 'Unknown error')}")
+                        return []
+                else:
+                    logger.error(f"Project knowledge search HTTP error: {response.status}")
+                    return []
+        except Exception as e:
+            logger.error(f"Error searching project knowledge: {e}")
+            return []
+    
     async def health_check(self) -> bool:
         """Check if memory service is healthy
         
@@ -304,16 +360,61 @@ class MemoryServiceClient:
 _memory_client: Optional[MemoryServiceClient] = None
 
 async def get_memory_client() -> MemoryServiceClient:
-    """Get global memory service client instance"""
+    """Get or create memory service client instance"""
     global _memory_client
+    
     if _memory_client is None:
-        _memory_client = MemoryServiceClient(base_url="http://localhost:8002")
+        _memory_client = MemoryServiceClient()
         await _memory_client.connect()
+    
     return _memory_client
+
+async def search_combined_context(
+    user_id: str,
+    query: str,
+    k_user: int = 3,
+    k_project: int = 5
+) -> Dict[str, List[MemorySearchResult]]:
+    """Search both user memories and project knowledge
+    
+    Args:
+        user_id: User identifier
+        query: Search query
+        k_user: Number of user memory results
+        k_project: Number of project knowledge results
+        
+    Returns:
+        Dictionary with 'user_memories' and 'project_knowledge' results
+    """
+    client = await get_memory_client()
+    
+    # Search both collections concurrently
+    import asyncio
+    user_memories_task = client.search_memories(user_id=user_id, query=query, k=k_user)
+    project_knowledge_task = client.search_project_knowledge(query=query, k=k_project)
+    
+    user_memories, project_knowledge = await asyncio.gather(
+        user_memories_task,
+        project_knowledge_task,
+        return_exceptions=True
+    )
+    
+    # Handle exceptions
+    if isinstance(user_memories, Exception):
+        logger.error(f"User memory search failed: {user_memories}")
+        user_memories = []
+    
+    if isinstance(project_knowledge, Exception):
+        logger.error(f"Project knowledge search failed: {project_knowledge}")
+        project_knowledge = []
+    
+    return {
+        "user_memories": user_memories if isinstance(user_memories, list) else [],
+        "project_knowledge": project_knowledge if isinstance(project_knowledge, list) else []
+    }
 
 async def close_memory_client():
     """Close global memory service client"""
     global _memory_client
     if _memory_client:
         await _memory_client.disconnect()
-        _memory_client = None

@@ -25,7 +25,7 @@ class LukiAgentSettings(BaseSettings):
     
     # Model Configuration
     model_backend: str = "together_ai"  # together_ai, openai, llama3_local, llama3_hosted
-    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    model_name: str = "openai/gpt-oss-120b"
     model_temperature: float = 0.7
     max_tokens: int = 2048
     

@@ -10,19 +10,25 @@ The main orchestrator class that brings together all components:
 
 import uuid
 import asyncio
+import logging
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from .config import settings
 from .context_builder import ContextBuilder, ContextBuildResult
 from .llm_backends import LLMManager, ModelResponse
 from .memory.retriever import MemoryRetriever
 from .memory.session_store import SessionStore, SessionState
-from .memory.memory_service_client import get_memory_client, MemorySearchResult
+from .memory.memory_service_client import get_memory_client, MemorySearchResult, search_combined_context
 from .prompts_system import get_system_prompt, get_instruction_template
+from .prompts_enhanced import get_enhanced_system_prompt
+from .knowledge_glossary import get_context_definitions, validate_term_usage
 from .safety_chain import SafetyChain
 from .tools.registry import ToolRegistry
+from .fast_query_handler import get_instant_context, needs_memory_search
 
 
 @dataclass
@@ -125,8 +131,25 @@ class LukiAgent:
                 request.metadata
             )
             
-            # Retrieve memory context for personalization
-            memory_results = await self._retrieve_memory_context(request)
+            # OPTIMIZATION: Use fast query handler for instant responses
+            memory_results = []
+            instant_fact = get_instant_context(request.user_input)
+            if instant_fact:
+                # Use instant fact without any DB query
+                from .memory.memory_service_client import MemorySearchResult
+                memory_results = [MemorySearchResult(
+                    content=instant_fact,
+                    metadata={"type": "project_context", "source": "instant"},
+                    similarity_score=1.0,
+                    chunk_id="instant_fact",
+                    created_at=datetime.utcnow()
+                )]
+                logger.debug("Using instant context - no DB query needed")
+            elif needs_memory_search(request.user_input):
+                # Only search if really needed
+                memory_results = await self._retrieve_memory_context(request)
+            else:
+                logger.debug("Skipping memory search - not needed for this query")
             
             # Build context using the 5-layer model with memory integration
             context_result = await self._build_context(request, session, memory_results)
@@ -146,12 +169,12 @@ class LukiAgent:
             if request.streaming:
                 # For streaming, we'll return the first chunk and handle streaming separately
                 response_content = ""
-                async for chunk in self._generate_streaming_response(context_result.final_prompt):
+                async for chunk in self._generate_streaming_response(context_result["final_prompt"]):
                     response_content += chunk
                     break  # Just get the first chunk for now
             else:
                 model_response = await self.llm_manager.generate(
-                    prompt=context_result.final_prompt,
+                    prompt=context_result["final_prompt"],
                     max_tokens=settings.max_tokens,
                     temperature=settings.model_temperature,
                     stop_sequences=["User:", "Human:"]
@@ -242,7 +265,7 @@ class LukiAgent:
             
             # Generate streaming response
             full_response = ""
-            async for chunk in self._generate_streaming_response(context_result.final_prompt):
+            async for chunk in self._generate_streaming_response(context_result["final_prompt"]):
                 # Apply safety filtering to each chunk
                 filtered_chunk, _ = await self.safety_chain.filter_output(chunk, request.user_id)
                 full_response += filtered_chunk
@@ -292,6 +315,27 @@ class LukiAgent:
                     "created_at": result.created_at.isoformat()
                 })
         
+        # Add glossary definitions if critical terms mentioned
+        user_message_upper = request.user_input.upper()
+        critical_terms = ['ELR', 'CAPS', 'REME', 'LUKI', 'REMEGRID']
+        
+        # Use enhanced system prompt with correct definitions
+        if any(term in user_message_upper for term in critical_terms):
+            enhanced_system_prompt = get_enhanced_system_prompt(
+                user_id=request.user_id,
+                personality_mode="default",
+                project_knowledge=True
+            )
+            # Add critical definitions to memory context
+            glossary_definitions = get_context_definitions(request.user_input, max_terms=1)
+            if glossary_definitions and memory_context:
+                memory_context.insert(0, {
+                    "content": glossary_definitions,
+                    "similarity_score": 1.0,
+                    "metadata": {"source": "glossary", "type": "definition"},
+                    "created_at": datetime.utcnow().isoformat()
+                })
+        
         context_result = await self.context_builder.build(
             user_input=request.user_input,
             user_id=request.user_id,
@@ -314,29 +358,50 @@ class LukiAgent:
             yield chunk
     
     async def _retrieve_memory_context(self, request: ConversationRequest) -> List[MemorySearchResult]:
-        """Retrieve relevant memory context from ELR for personalization"""
+        """Retrieve relevant memory context from both user ELR and project knowledge"""
         try:
-            memory_client = await get_memory_client()
+            # Search both user memories and project knowledge
+            # For ecosystem queries, prioritize project knowledge heavily
+            is_ecosystem_query = any(term in request.user_input.lower() for term in [
+                'luki', 'token', 'team', 'founder', 'remelife', 'remecure', 'simon', 'mike', 
+                'orbit', 'oliver', 'johnny', 'asif', 'tokenomics', 'blockchain', 'ecosystem'
+            ])
             
-            # Search for relevant memories based on user input
-            memory_results = await memory_client.search_memories(
+            k_user = 2 if is_ecosystem_query else 3
+            k_project = 10 if is_ecosystem_query else 5  # Much more project knowledge for ecosystem queries
+            
+            combined_results = await search_combined_context(
                 user_id=request.user_id,
                 query=request.user_input,
-                k=settings.retrieval_top_k,  # From config
-                content_types=["personal_info", "preferences", "experiences", "goals"],
-                sensitivity_filter=["low", "medium"]  # Exclude high sensitivity for general chat
+                k_user=k_user,
+                k_project=k_project
             )
             
-            if memory_results:
-                print(f"🧠 Retrieved {len(memory_results)} memory chunks for user {request.user_id}")
-                for result in memory_results[:2]:  # Log first 2 for debugging
-                    print(f"   - {result.content[:100]}... (score: {result.similarity_score:.3f})")
-            else:
-                print(f"🧠 No memory context found for user {request.user_id}")
+            # Combine results with project knowledge first (higher priority)
+            all_results = []
+            all_results.extend(combined_results.get("project_knowledge", []))
+            all_results.extend(combined_results.get("user_memories", []))
             
-            return memory_results
+            logger.info(f"Retrieved {len(combined_results.get('project_knowledge', []))} project knowledge + "
+                       f"{len(combined_results.get('user_memories', []))} user memory results")
+            
+            return all_results
             
         except Exception as e:
+            logger.error(f"Failed to retrieve memory context: {e}")
+            # Fallback to user memories only
+            try:
+                memory_client = await get_memory_client()
+                memory_results = await memory_client.search_memories(
+                    user_id=request.user_id,
+                    query=request.user_input,
+                    k=settings.retrieval_top_k
+                )
+                logger.info(f"Fallback: Retrieved {len(memory_results)} user memory results")
+                return memory_results
+            except Exception as fallback_error:
+                logger.error(f"Fallback memory retrieval also failed: {fallback_error}")
+                return []
             print(f"⚠️ Memory retrieval failed: {e}")
             return []  # Graceful degradation - continue without memory context
     
@@ -388,15 +453,15 @@ class LukiAgent:
         """Log conversation for telemetry and evaluation"""
         try:
             # Store conversation summary in memory service
-            if response.context_used and response.context_used.retrieval_results:
+            if response.context_used and response.context_used.get("chunks_used"):
                 await self.memory_retriever.update_conversation_summary(
                     user_id=request.user_id,
                     session_id=response.session_id,
                     summary=f"User: {request.user_input[:100]}... | LUKi: {response.content[:100]}...",
                     metadata={
                         "handler_type": request.handler_type,
-                        "retrieval_count": len(response.context_used.retrieval_results) if response.context_used and response.context_used.retrieval_results else 0,
-                        "context_tokens": response.context_used.total_tokens if response.context_used else 0,
+                        "retrieval_count": len(response.context_used.get("chunks_used", [])) if response.context_used else 0,
+                        "context_tokens": response.context_used.get("total_tokens", 0) if response.context_used else 0,
                         "processing_time": response.metadata.get("processing_time", 0) if response.metadata else 0
                     }
                 )
@@ -443,6 +508,23 @@ class LukiAgent:
             }
         }
     
+    async def initialize(self):
+        """Initialize agent components and connections"""
+        # Test project knowledge retrieval
+        try:
+            from .memory.memory_service_client import get_memory_client
+            memory_client = await get_memory_client()
+            test_results = await memory_client.search_project_knowledge("LUKi token", k=3)
+            print(f"🧠 Project knowledge test: {len(test_results)} chunks retrieved")
+            if test_results:
+                print(f"📄 Sample content: {test_results[0].content[:100]}...")
+            else:
+                print("⚠️  No project knowledge chunks found - check memory service initialization")
+        except Exception as e:
+            print(f"⚠️  Project knowledge test failed: {e}")
+        
+        print(f"✅ LUKi Agent fully initialized and ready")
+
     async def close(self):
         """Clean up agent resources"""
         if hasattr(self, 'llm_manager') and self.llm_manager:
