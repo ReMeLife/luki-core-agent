@@ -24,18 +24,20 @@ class LukiAgentSettings(BaseSettings):
     port: int = 9000
     
     # Model Configuration
-    model_backend: str = "llama3_hosted"  # openai, llama3_local, llama3_hosted
-    model_name: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    model_backend: str = "together_ai"  # together_ai, openai, llama3_local, llama3_hosted
+    model_name: str = "openai/gpt-oss-120b"
     model_temperature: float = 0.7
     max_tokens: int = 2048
     
-    # Hosted LLaMA Configuration (Together AI)
-    hosted_api_key: Optional[str] = None  # Set via LUKI_HOSTED_API_KEY environment variable
-    hosted_base_url: str = "https://api.together.xyz"
-    
-    # OpenAI Configuration (fallback only)
+    # OpenAI Configuration
     openai_api_key: Optional[str] = None
     openai_organization: Optional[str] = None
+    
+    # Together AI Configuration
+    together_api_key: Optional[str] = None
+    
+    # Hosted Model Configuration (generic)
+    hosted_api_key: Optional[str] = None
     
     # Local Model Configuration
     local_model_path: Optional[str] = None
@@ -55,12 +57,14 @@ class LukiAgentSettings(BaseSettings):
     internal_api_key: Optional[str] = None
     
     # Safety and Compliance
-    enable_safety_filter: bool = True
+    enable_safety_filters: bool = True
     enable_pii_redaction: bool = True
     enable_consent_checking: bool = True
     
     # Logging and Telemetry
     log_level: str = "INFO"
+    structured_logging: bool = True
+    enable_metrics: bool = True
     enable_tracing: bool = True
     jaeger_endpoint: Optional[str] = None
     
@@ -74,8 +78,11 @@ class LukiAgentSettings(BaseSettings):
     enable_memory_updates: bool = True
     
     class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = False
         env_prefix = "LUKI_"
+        extra = "ignore"
 
 
 # Global settings instance
@@ -97,22 +104,19 @@ def get_model_config() -> dict:
     return {
         "backend": settings.model_backend,
         "model_name": settings.model_name,
+        "name": settings.model_name,
         "temperature": settings.model_temperature,
         "max_tokens": settings.max_tokens,
         "device": settings.device,
-        # Hosted LLaMA configuration
-        "api_key": settings.hosted_api_key,
-        "base_url": settings.hosted_base_url,
-        # OpenAI configuration (fallback)
+        "api_key": settings.together_api_key or settings.hosted_api_key,
         "openai_api_key": settings.openai_api_key,
-        "openai_organization": settings.openai_organization,
     }
 
 
 def get_safety_config() -> dict:
     """Get safety and compliance configuration"""
     return {
-        "enable_safety_filter": settings.enable_safety_filter,
+        "enable_safety_filters": settings.enable_safety_filters,
         "enable_pii_redaction": settings.enable_pii_redaction,
         "enable_consent_checking": settings.enable_consent_checking,
     }

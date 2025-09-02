@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Development server runner for LUKi Core Agent
+Development server launcher for LUKi Core Agent
 
 Starts the FastAPI development server with proper configuration.
+Supports OpenAI GPT models and other configurable LLM backends.
 """
 
 import os
 import sys
 import uvicorn
 
-# Add the parent directory to Python path so we can import luki_agent
+# Add parent directory to Python path for module imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from luki_agent.config import settings
 
 def main():
-    """Start the development server"""
+    """Launch the development server"""
     print(f"🚀 Starting LUKi Core Agent Development Server")
     print(f"📍 Host: {settings.host}:{settings.port}")
     print(f"🤖 Model Backend: {settings.model_backend}")
@@ -23,7 +24,7 @@ def main():
     print(f"📊 Debug Mode: {settings.debug}")
     print("-" * 50)
     
-    # Start the server
+    # Launch the FastAPI server
     uvicorn.run(
         "luki_agent.dev_api:app",
         host=settings.host,
