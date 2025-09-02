@@ -243,6 +243,8 @@ luki_agent/safety_chain.py
 # All test files containing proprietary scenarios and API keys
 test_*.py
 tests/
+# Allow generic integration tests for open-source framework
+!tests/test_integration.py
 
 # Proprietary configuration and data
 .env
