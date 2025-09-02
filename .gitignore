@@ -222,6 +222,7 @@ secrets/
 luki_agent/knowledge_glossary.py
 luki_agent/chains/avatar_personality.py
 luki_agent/chains/personality_templates.py
+luki_agent/chains/context_builder.py
 luki_agent/prompts_system.py
 luki_agent/prompts_enhanced.py
 luki_agent/prompts_optimized.py
@@ -231,6 +232,9 @@ luki_agent/context_builder.py
 luki_agent/enhanced_context_builder.py
 luki_agent/smart_context_builder.py
 luki_agent/fast_query_handler.py
+
+# Knowledge folder with proprietary project information
+luki_agent/knowledge/
 
 # Additional files containing project-specific information
 luki_agent/tools/registry.py
