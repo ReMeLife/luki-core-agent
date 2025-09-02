@@ -126,8 +126,8 @@ pip install -r requirements.txt
 Set environment variables (create `.env` file or set in PowerShell):
 
 ~~~powershell
-$env:LUKI_MODEL_BACKEND="configurable"     # or openai
-$env:OPENAI_API_KEY="your_openai_key"      # only if using fallback
+$env:LUKI_MODEL_BACKEND="openai"           # configurable LLM backend
+$env:OPENAI_API_KEY="your_openai_key"      # required for OpenAI models
 $env:MEMORY_API_URL="http://localhost:8002"
 $env:MODULES_TOKEN="dev123"                # auth to call public modules
 ~~~
