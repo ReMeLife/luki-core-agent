@@ -232,6 +232,10 @@ luki_agent/enhanced_context_builder.py
 luki_agent/smart_context_builder.py
 luki_agent/fast_query_handler.py
 
+# Additional files containing project-specific information
+luki_agent/tools/registry.py
+luki_agent/safety_chain.py
+
 # All test files containing proprietary scenarios and API keys
 test_*.py
 tests/

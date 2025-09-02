@@ -70,19 +70,22 @@ Respond in a {tone} manner using {language} language."""
         
         return templates.get(template_type, templates["default"])
     
-    def format_response_template(self, content: str, sections: Dict[str, str] = None) -> str:
+    def format_prompt(self, template_name: str, context: Dict[str, str] = None) -> str:
         """
-        Format response with sections.
+        Format prompt with context.
         
-        This is a stub implementation - customize for your response format.
+        This is a stub implementation - customize for your prompt format.
         """
-        if not sections:
-            return content
+        template = self.get_conversation_template(template_name)
+        if not context:
+            return template
             
-        formatted_response = content + "\n\n"
-        
-        for section_name, section_content in sections.items():
-            if section_content:
-                formatted_response += f"## {section_name}\n{section_content}\n\n"
-                
-        return formatted_response.strip()
+        try:
+            return template.format(**context)
+        except KeyError as e:
+            # If template has placeholders not in context, return template as-is
+            return template
+    
+    def get_available_templates(self) -> List[str]:
+        """Get list of available template types"""
+        return ["default", "supportive", "informative", "casual"]
