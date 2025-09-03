@@ -348,7 +348,7 @@ class TogetherAIBackend(LLMBackend):
                 },
                 timeout=120.0  # Longer timeout for large models
             )
-            print(f"✅ Together AI backend initialized with model: {self.model_name}")
+            print(f"✅ Together AI backend initialized with model: {self.model_name} (ChatGPT-compatible API)")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Together AI client: {e}")
     
