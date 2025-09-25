@@ -8,7 +8,10 @@ __version__ = "0.1.0"
 __author__ = "ReMeLife Team"
 __email__ = "dev@remelife.com"
 
-from .agent_core import LukiAgent
-from .context_builder import ContextBuilder
+# Only import what's actually used by the current system
+try:
+    from .context_builder import ContextBuilder
+except ImportError:
+    ContextBuilder = None
 
-__all__ = ["LukiAgent", "ContextBuilder"]
+__all__ = ["ContextBuilder"]
