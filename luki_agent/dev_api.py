@@ -1,302 +1,312 @@
-"""
-Development API for LUKi Core Agent
+"""Development API for LUKi Core Agent."""
 
-FastAPI server providing HTTP endpoints for testing and development.
-"""
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, AsyncGenerator
+from typing import Optional, List, Dict, Any, AsyncGenerator
+import json
 import logging
 import traceback
-import json
-import asyncio
+from dataclasses import asdict
+import os
+import base64
+import io
+import zipfile
+import re
 
-from .config import settings
-from .prompts_enhanced import get_enhanced_system_prompt, format_gptoss_prompt, get_context_strategy
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
-app = FastAPI(
-    title="LUKi Core Agent API",
-    description="Development API for LUKi Core Agent",
-    version="0.1.0"
-)
+try:
+    from .config import settings
+    from .llm_backends import LLMManager
+    from .context_builder import ContextBuilder
+    from .memory.memory_service_client import MemoryServiceClient
+    from .project_kb import ProjectKB
+    logger.info("✅ All core imports successful")
+except ImportError as e:
+    logger.error(f"❌ CRITICAL IMPORT ERROR: {e}")
+    raise
 
-# Request/Response models
+app = FastAPI(title="LUKi Core Agent API", version="2.0.0")
+
+def _bootstrap_project_kb(source_dirs: List[str]) -> List[str]:
+    """
+    Ensure project KB sources exist in container by optionally bootstrapping
+    from an archive provided via env vars. This is needed when using a Dockerfile
+    build on Railway because gitignored directories (e.g. "./_context") are not
+    part of the build context.
+
+    Env vars:
+    - LUKI_PROJECT_KB_ARCHIVE_B64: base64-encoded ZIP archive of project context
+    - LUKI_PROJECT_KB_ARCHIVE_URL: HTTPS URL to a ZIP archive of project context
+    - LUKI_PROJECT_KB_TARGET_DIR: where to extract (default: first source dir or './_context')
+    """
+    try:
+        # Determine target dir
+        default_target = source_dirs[0] if (source_dirs and source_dirs[0]) else "./_context"
+        target_dir = os.getenv("LUKI_PROJECT_KB_TARGET_DIR", default_target).strip() or default_target
+
+        # If target dir already exists and is non-empty, do nothing
+        if os.path.isdir(target_dir):
+            try:
+                # non-empty check
+                if any(True for _ in os.scandir(target_dir)):
+                    logger.info(f"ProjectKB bootstrap: '{target_dir}' exists and is non-empty; skipping bootstrap")
+                    return [target_dir]
+            except Exception:
+                pass
+
+        # Try Base64 first
+        b64 = os.getenv("LUKI_PROJECT_KB_ARCHIVE_B64", "").strip()
+        if b64:
+            try:
+                data = base64.b64decode(b64)
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    zf.extractall(target_dir)
+                logger.info(f"ProjectKB bootstrap: extracted Base64 archive to '{target_dir}'")
+                return [target_dir]
+            except Exception as e:
+                logger.warning(f"ProjectKB bootstrap (b64) failed: {e}")
+
+        # Try URL next
+        url = os.getenv("LUKI_PROJECT_KB_ARCHIVE_URL", "").strip()
+        if url:
+            try:
+                import requests  # local import to avoid hard dep at import-time
+                resp = requests.get(url, timeout=60)
+                resp.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                    zf.extractall(target_dir)
+                logger.info(f"ProjectKB bootstrap: downloaded and extracted archive to '{target_dir}'")
+                return [target_dir]
+            except Exception as e:
+                logger.warning(f"ProjectKB bootstrap (url) failed: {e}")
+
+        # If we reach here, no archive provided or extraction failed
+        logger.info(f"ProjectKB bootstrap: no archive provided or extraction failed; using '{target_dir}' as-is")
+        return [target_dir]
+    except Exception as e:
+        logger.warning(f"ProjectKB bootstrap encountered an unexpected error: {e}")
+        return source_dirs or ["./_context"]
+
+def _bootstrap_prompts_dir():
+    """Bootstrap prompts directory from Base64 archive if needed"""
+    try:
+        prompts_archive_b64 = os.getenv("LUKI_PROMPTS_ARCHIVE_B64", "").strip()
+        target_dir = os.getenv("LUKI_PROMPTS_TARGET_DIR", "/app/prompts").strip()
+        
+        if not prompts_archive_b64:
+            logger.info("Prompts bootstrap: no archive provided; using existing prompts/ if available")
+            return
+            
+        if os.path.exists(target_dir) and os.listdir(target_dir):
+            logger.info(f"Prompts bootstrap: {target_dir} already exists with files; skipping extraction")
+            return
+            
+        # Create target directory
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Decode and extract
+        import base64
+        import zipfile
+        import tempfile
+        
+        archive_data = base64.b64decode(prompts_archive_b64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            temp_file.write(archive_data)
+            temp_file.flush()
+            
+            with zipfile.ZipFile(temp_file.name, 'r') as zip_ref:
+                zip_ref.extractall(target_dir)
+                
+        os.unlink(temp_file.name)
+        
+        extracted_files = os.listdir(target_dir) if os.path.exists(target_dir) else []
+        logger.info(f"Prompts bootstrap: extracted {len(extracted_files)} files to '{target_dir}'")
+        
+    except Exception as e:
+        logger.warning(f"Prompts bootstrap encountered an error: {e}")
+
+@app.on_event("startup")
+async def on_startup():
+    # Initialize and cache the LLM manager once to avoid per-request cold starts
+    try:
+        logger.info("🔧 Initializing global LLMManager on startup...")
+        app.state.llm_manager = LLMManager()
+        logger.info("✅ Global LLMManager ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize LLMManager on startup: {e}")
+        # Do not raise, allow lazy init per-request as fallback
+        app.state.llm_manager = None
+
+    # Bootstrap prompts directory if needed
+    _bootstrap_prompts_dir()
+
+    # Initialize Project Knowledge Base (separate from ELR)
+    try:
+        paths_env = os.getenv("LUKI_PROJECT_KB_PATHS", "").strip()
+        source_dirs: List[str] = []
+        if paths_env:
+            # Support ',', ';', or whitespace separators
+            for p in re.split(r"[;,\s]+", paths_env):
+                p = p.strip()
+                if p:
+                    source_dirs.append(p)
+        logger.info(f"🔧 ProjectKB parsed source dirs: {source_dirs}")
+        # Bootstrap if directories are missing in container due to Docker build context
+        source_dirs = _bootstrap_project_kb(source_dirs or ["./_context"])
+        # Resolve common absolute/relative variants so local Docker builds work regardless of env value
+        resolved_dirs: List[str] = []
+        for p in source_dirs:
+            candidates = [p]
+            if p.startswith("/app/"):
+                # Also try relative variant (WORKDIR is /app)
+                candidates.append("." + p[len("/app"):])  # '/app/_context' -> './_context'
+            elif p.startswith("./"):
+                # Also try absolute variant
+                candidates.append("/app/" + p[2:])
+            chosen = None
+            for cand in candidates:
+                if os.path.isdir(cand):
+                    chosen = cand
+                    break
+            resolved_dirs.append(chosen or p)
+        try:
+            # Light debug: show top-level /app entries to aid diagnosis
+            top = []
+            for name in os.listdir("/app"):
+                top.append(name)
+                if len(top) >= 15:  # avoid noisy logs
+                    break
+            logger.info(f"🔎 /app contains (first 15): {top}")
+        except Exception:
+            pass
+        logger.info(f"🔧 ProjectKB effective source dirs (resolved): {resolved_dirs}")
+        app.state.project_kb = ProjectKB(source_dirs=resolved_dirs)
+        logger.info(f"🔧 ProjectKB initializing with {len(resolved_dirs)} source dirs")
+        app.state.project_kb.ingest()
+        logger.info("✅ ProjectKB ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize ProjectKB: {e}")
+        app.state.project_kb = None
+
 class ChatRequest(BaseModel):
     message: str
     user_id: str
-    session_id: str
+    session_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
-
-class ChatResponse(BaseModel):
-    response: str
-    session_id: str
-    user_id: str
-    model_used: str
-    metadata: Optional[Dict[str, Any]] = None
-
-@app.get("/")
-async def root():
-    """Root endpoint - health check"""
-    return {
-        "service": "luki-core-agent",
-        "version": "0.1.0",
-        "status": "running",
-        "model_backend": settings.model_backend,
-        "environment": settings.environment
-    }
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "model_backend": settings.model_backend,
-        "debug": settings.debug
-    }
+    return {"status": "healthy"}
 
-@app.post("/v1/chat", response_model=ChatResponse)
+@app.post("/v1/chat")
 async def chat(request: ChatRequest):
-    """
-    Chat endpoint for conversing with LUKi with full ELR integration
-    """
+    # Debug: Log all incoming requests
+    logger.info(f"🔍 INCOMING REQUEST: user_id={request.user_id}, message_length={len(request.message)}")
     try:
-        logger.info(f"Chat request from user {request.user_id}, session {request.session_id}")
-        logger.info(f"Message: {request.message}")
-        logger.info(f"Model backend: {settings.model_backend}")
+        logger.info(f"🔍 Step 1: Initializing LLM Manager...")
+        llm_manager = getattr(app.state, "llm_manager", None)
+        if llm_manager is None:
+            logger.info("ℹ️ Global LLMManager not initialized; creating on-demand instance...")
+            llm_manager = LLMManager()
+            app.state.llm_manager = llm_manager
+        logger.info(f"✅ Step 1: LLM Manager initialized")
         
-        # Import here to avoid circular imports
-        from .llm_backends import LLMManager
-        from .memory.memory_service_client import MemoryServiceClient
+        logger.info(f"🔍 Step 2: Initializing Context Builder...")
+        context_builder = ContextBuilder()
+        logger.info(f"✅ Step 2: Context Builder initialized")
         
-        # Initialize components
-        llm_manager = LLMManager()
-        memory_client = MemoryServiceClient()
-        
-        # Retrieve ELR memories for the user
-        try:
-            memories = await memory_client.search_memories(
-                user_id=request.user_id,
-                query=request.message,
-                k=5
-            )
-            logger.info(f"Retrieved {len(memories)} memories for user {request.user_id}")
-        except Exception as e:
-            logger.warning(f"Failed to retrieve memories: {e}")
-            memories = []
-        
-        # Determine context strategy using enhanced analysis
-        context_strategy = get_context_strategy(
-            user_message=request.message,
-            user_id=request.user_id,
-            memories=memories
-        )
-        
-        # Get enhanced system prompt with appropriate personality
-        personality_mode = "empathetic" if context_strategy["needs_empathetic_response"] else "default"
-        system_prompt = get_enhanced_system_prompt(
-            user_id=request.user_id,
-            personality_mode=personality_mode,
-            project_knowledge=context_strategy["use_project_knowledge"]
-        )
-        
-        # Build memory context if strategy indicates it's needed
-        memory_context = ""
-        if context_strategy["use_memory_context"]:
-            memory_context = "User Context:\n"
-            for memory in memories[:3]:  # Top 3 most relevant
-                memory_context += f"- {memory.content}\n"
-        
-        # Get conversation history from context
-        conversation_history = []
-        if request.context and "conversation_history" in request.context:
-            conversation_history = request.context["conversation_history"]
-        
-        # Format using proper GPT-OSS structure
-        full_prompt = format_gptoss_prompt(
-            system_prompt=system_prompt,
-            conversation_history=conversation_history,
-            current_message=request.message,
-            memory_context=memory_context
-        )
-        
-        # Generate response using full context
-        logger.info(f"Generating response using {settings.model_backend} backend...")
-        response = await llm_manager.generate(
-            prompt=full_prompt,
-            max_tokens=settings.max_tokens,
-            temperature=settings.model_temperature
-        )
-        
-        logger.info(f"Generated response: {response.content[:100]}...")
-        
-        return ChatResponse(
-            response=response.content,
-            session_id=request.session_id,
-            user_id=request.user_id,
-            model_used=settings.model_backend,
-            metadata={
-                "model_name": settings.model_name,
-                "usage": response.usage,
-                "finish_reason": response.finish_reason
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Chat endpoint error: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Return fallback response for debugging
-        return ChatResponse(
-            response=f"I'm LUKi, but I'm having technical difficulties right now. Error: {str(e)}",
-            session_id=request.session_id,
-            user_id=request.user_id,
-            model_used="fallback",
-            metadata={"error": str(e)}
+        # Prepare user memories (ELR) if gateway provided them (only for authenticated users)
+        user_memories = request.context.get("memory_context", []) if request.context else []
+
+        # ProjectKB search (independent of ELR, available to all users)
+        proj_docs: List[Dict[str, Any]] = []
+        kb = getattr(app.state, "project_kb", None)
+        if kb is not None:
+            try:
+                msg_len = len(request.message.strip())
+                if msg_len > 12:
+                    top_k = 3 if msg_len <= 80 else 5
+                    logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}")
+                    proj_docs = kb.search(request.message, top_k=top_k)
+                else:
+                    proj_docs = []
+            except Exception as e:
+                logger.warning(f"ProjectKB search failed: {e}")
+
+        logger.info(
+            f"🔍 Step 3: Building context with {len(proj_docs)} project docs and {len(user_memories)} user memories..."
         )
 
-async def generate_streaming_response(prompt: str, user_id: str, session_id: str) -> AsyncGenerator[str, None]:
-    """Generate streaming response from LLM"""
-    try:
-        # Import here to avoid circular imports
-        from .llm_backends import LLMManager
-        
-        # Initialize LLM manager
-        llm_manager = LLMManager()
-        
-        # For now, simulate streaming by chunking the response
-        # In a full implementation, this would use the LLM's streaming capability
-        logger.info(f"Generating streaming response using {settings.model_backend} backend...")
-        response = await llm_manager.generate(
-            prompt=prompt,
-            max_tokens=settings.max_tokens,
-            temperature=settings.model_temperature
+        # Combine docs first (project KB) then user memories
+        combined_context = (proj_docs or []) + (user_memories or [])
+
+        context_result = await context_builder.build(
+            user_input=request.message,
+            user_id=request.user_id,
+            conversation_history=request.context.get("conversation_history", []) if request.context else [],
+            memory_context=combined_context
         )
-        
-        # Simulate streaming by sending response in chunks
-        content = response.content
-        words = content.split()
-        
-        for i, word in enumerate(words):
-            chunk_data = {
-                "token": word + (" " if i < len(words) - 1 else ""),
-                "session_id": session_id,
-                "user_id": user_id
-            }
-            yield f"data: {json.dumps(chunk_data)}\n\n"
-            await asyncio.sleep(0.05)  # Small delay to simulate streaming
-        
-        # Send completion signal
-        yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-        
+        logger.info(f"✅ Step 3: Context built successfully")
+
+        logger.info(f"🔍 Step 4: Generating LLM response...")
+        response = await llm_manager.generate(prompt=context_result["final_prompt"])
+        logger.info(f"✅ Step 4: LLM response generated successfully")
+        # Always include a session_id for gateway compatibility
+        session_id = request.session_id or "new-session"
+        payload = {"response": response.content, "metadata": response.metadata, "session_id": session_id}
+        logger.info(f"🚀 Returning response to gateway | chars={len(response.content)}")
+        return payload
+
     except Exception as e:
-        logger.error(f"Streaming generation error: {e}")
-        error_data = {
-            "error": str(e),
-            "session_id": session_id,
-            "user_id": user_id
-        }
-        yield f"data: {json.dumps(error_data)}\n\n"
+        logger.error(f"Chat endpoint error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
 
 @app.post("/v1/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """
-    Streaming chat endpoint for conversing with LUKi with full ELR integration
-    
-    Returns server-sent events with streaming response tokens.
-    """
-    try:
-        logger.info(f"Streaming chat request from user {request.user_id}, session {request.session_id}")
-        logger.info(f"Message: {request.message}")
-        
-        # Import here to avoid circular imports
-        from .memory.memory_service_client import MemoryServiceClient
-        
-        # Initialize memory client
-        memory_client = MemoryServiceClient()
-        
-        # Retrieve ELR memories for the user
+    async def event_generator():
         try:
-            memories = await memory_client.search_memories(
+            llm_manager = getattr(app.state, "llm_manager", None)
+            if llm_manager is None:
+                llm_manager = LLMManager()
+                app.state.llm_manager = llm_manager
+            context_builder = ContextBuilder()
+            # ELR user memories provided by gateway (authenticated users only)
+            user_memories = request.context.get("memory_context", []) if request.context else []
+
+            # Project KB search
+            proj_docs: List[Dict[str, Any]] = []
+            kb = getattr(app.state, "project_kb", None)
+            if kb is not None:
+                try:
+                    msg_len = len(request.message.strip())
+                    if msg_len > 12:
+                        top_k = 3 if msg_len <= 80 else 5
+                        logger.info(f"ProjectKB search (stream): msg_len={msg_len}, top_k={top_k}")
+                        proj_docs = kb.search(request.message, top_k=top_k)
+                    else:
+                        proj_docs = []
+                except Exception as e:
+                    logger.warning(f"ProjectKB search failed (stream): {e}")
+
+            context_result = await context_builder.build(
+                user_input=request.message,
                 user_id=request.user_id,
-                query=request.message,
-                k=5
+                conversation_history=request.context.get("conversation_history", []) if request.context else [],
+                memory_context=(proj_docs or []) + (user_memories or [])
             )
-            logger.info(f"Retrieved {len(memories)} memories for streaming user {request.user_id}")
+
+            async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
+                yield f"data: {json.dumps({'token': token})}\n\n"
+            
+            yield f"data: {json.dumps({'done': True})}\n\n"
+
         except Exception as e:
-            logger.warning(f"Failed to retrieve memories for streaming: {e}")
-            memories = []
-        
-        # Determine context strategy using enhanced analysis
-        context_strategy = get_context_strategy(
-            user_message=request.message,
-            user_id=request.user_id,
-            memories=memories
-        )
-        
-        # Get enhanced system prompt with appropriate personality
-        personality_mode = "empathetic" if context_strategy["needs_empathetic_response"] else "default"
-        system_prompt = get_enhanced_system_prompt(
-            user_id=request.user_id,
-            personality_mode=personality_mode,
-            project_knowledge=context_strategy["use_project_knowledge"]
-        )
-        
-        # Build memory context if strategy indicates it's needed
-        memory_context = ""
-        if context_strategy["use_memory_context"]:
-            memory_context = "User Context:\n"
-            for memory in memories[:3]:  # Top 3 most relevant
-                memory_context += f"- {memory.content}\n"
-        
-        # Get conversation history from context
-        conversation_history = []
-        if request.context and "conversation_history" in request.context:
-            conversation_history = request.context["conversation_history"]
-        
-        # Format using proper GPT-OSS structure
-        full_prompt = format_gptoss_prompt(
-            system_prompt=system_prompt,
-            conversation_history=conversation_history,
-            current_message=request.message,
-            memory_context=memory_context
-        )
-        
-        # Return streaming response with full context
-        return StreamingResponse(
-            generate_streaming_response(full_prompt, request.user_id, request.session_id),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*"
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Streaming chat endpoint error: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"Streaming error: {e}\n{traceback.format_exc()}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-@app.get("/v1/config")
-async def get_config():
-    """Get current configuration (for debugging)"""
-    return {
-        "model_backend": settings.model_backend,
-        "model_name": settings.model_name,
-        "environment": settings.environment,
-        "debug": settings.debug,
-        "host": settings.host,
-        "port": settings.port
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
