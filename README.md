@@ -50,12 +50,12 @@ This framework can be adapted for various AI assistant use cases while maintaini
 ---
 
 ## 3. Tech Stack  
-- **Framework:** LangChain (core routing), plus custom policy layer  
-- **Models:** Configurable LLM backends with fallback support  
-- **Prompt Templating:** Jinja2 / LangChain PromptTemplates  
+- **Framework:** Custom agent orchestration with FastAPI  
+- **Models:** ChatGPT OSS 20B/120B (hybrid) via Together AI, with fallback support  
+- **Prompt Templating:** Jinja2 templates with structured JSON response schemas  
 - **Safety Filters:** Configurable content filters and PII detection  
 - **Tracing & Eval:** OpenTelemetry integration, custom evaluation scripts  
-- **Server:** FastAPI for development endpoints
+- **Server:** FastAPI for development and production endpoints
 
 ---
 
@@ -65,48 +65,57 @@ luki-core-agent/
 ├── README.md
 ├── pyproject.toml
 ├── requirements.txt
-├── env.example                    # environment variable template
+├── requirements-full.txt          # complete dependencies
+├── requirements-minimal.txt       # minimal dependencies
+├── requirements-railway.txt       # railway deployment dependencies
+├── .env                          # environment variables 
+├── .railwayignore               # railway deployment exclusions
+├── .dockerignore                # docker build exclusions
+├── Dockerfile                   # container build configuration
+├── railway.toml                 # railway deployment configuration
+├── Procfile                     # process definitions
+├── standalone_api.py            # standalone API server
+├── full_startup.py              # full system startup script
+├── engagement.db                # local engagement database 
+├── prompts/                     # Jinja2 prompt templates 
+│   ├── persona_luki_v1.j2
+│   ├── safety_rules_v1.j2
+│   ├── system_core_min_v1.j2
+│   ├── system_core_text_v1.j2
+│   └── system_core_v1.j2
 ├── luki_agent/
 │   ├── __init__.py
-│   ├── config.py                  # feature flags, model routing, rate limits
-│   │
-│   ├── # Core Agent Framework
-│   ├── agent_core.py              # main agent orchestration logic
-│   ├── llm_backends.py            # LLM integration and fallback support
-│   ├── dev_api.py                 # development FastAPI server
-│   ├── safety_chain.py            # content filtering and safety compliance
-│   │
-│   ├── # Context Management
-│   ├── context_builder.py         # context assembly and management
-│   ├── enhanced_context_builder.py # advanced context processing
-│   ├── smart_context_builder.py   # optimized context handling
-│   ├── fast_query_handler.py      # quick response processing
-│   │
-│   ├── # Conversation Logic
+│   ├── config.py                # feature flags, model routing, rate limits
+│   ├── main.py                  # main entry point
+│   ├── dev_api.py               # development FastAPI server
+│   ├── minimal_api.py           # minimal API interface
+│   ├── llm_backends.py          # LLM integration (Together AI, local)
+│   ├── safety_chain.py          # content filtering and safety compliance
+│   ├── context_builder.py       # context assembly and management
+│   ├── module_client.py         # client for LUKi modules
+│   ├── project_kb.py            # project knowledge base integration
+│   ├── prompt_registry.py       # prompt template management
+│   ├── prompts_system.py        # system prompt definitions
+│   ├── schemas.py               # Pydantic response schemas
+│   ├── knowledge_glossary.py    # domain knowledge and terminology
 │   ├── chains/
-│   │   ├── conversation_chain.py  # main conversation orchestrator
-│   │   └── user_context_detector.py # user context analysis
-│   │
-│   ├── # Tool Integration
+│   │   ├── __init__.py
+│   │   ├── conversation_chain.py # main conversation orchestrator
+│   │   ├── user_context_detector.py # user context analysis
+│   │   └── [additional chain files]
 │   ├── tools/
 │   │   ├── __init__.py
-│   │   └── registry.py            # tool registration and routing
-│   │
-│   ├── # Memory Services
+│   │   └── registry.py          # tool registration and routing
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   ├── memory_client.py       # memory service integration
+│   │   ├── memory_client.py     # memory service integration
 │   │   ├── memory_service_client.py # enhanced memory client
-│   │   ├── retriever.py           # vector and KV retrieval
-│   │   └── session_store.py       # ephemeral session memory
-│   │
-│   └── # Knowledge Base
-│       └── knowledge/
-│           └── project_glossary.py # project-specific knowledge base
-├── scripts/
-│   └── run_dev_server.py          # development server launcher
-└── tests/
-    └── # Basic test framework structure
+│   │   ├── retriever.py         # vector and KV retrieval
+│   │   └── session_store.py     # ephemeral session memory
+│   └── knowledge/
+│       └── project_glossary.py  # project-specific knowledge base
+├── scripts/                     # deployment and utility scripts
+└── tests/                       # comprehensive test suites
 ~~~
 
 **Note:** This structure shows the core framework that remains after sanitization. Proprietary components including personality definitions, business terminology, conversation templates, comprehensive test scenarios, and prompt engineering files have been removed from the public release.
@@ -126,30 +135,42 @@ pip install -r requirements.txt
 Set environment variables (create `.env` file or set in PowerShell):
 
 ~~~powershell
-$env:LUKI_MODEL_BACKEND="openai"           # configurable LLM backend
-$env:OPENAI_API_KEY="your_openai_key"      # required for OpenAI models
-$env:MEMORY_API_URL="http://localhost:8002"
+$env:LUKI_MODEL_BACKEND="together"         # Together AI backend (default)
+$env:TOGETHER_API_KEY="your_together_key"   # required for Together AI models
+$env:LUKI_PRIMARY_MODEL="openai/gpt-oss-20b" # ChatGPT OSS 20B model
+$env:MEMORY_SERVICE_URL="http://localhost:8002" 
 $env:MODULES_TOKEN="dev123"                # auth to call public modules
 ~~~
 
 Run dev server (optional):
 
 ~~~powershell
+# Development server
 uvicorn luki_agent.dev_api:app --reload --port 9000
+
+# Or use the standalone API
+python standalone_api.py
+
+# Or full startup script
+python full_startup.py
 ~~~
 
 Chat locally:
 
 ~~~python
-from luki_agent.agent_core import LukiAgent
+from luki_agent.dev_api import app
+import httpx
 
-# Initialize with your own configuration
-agent = LukiAgent()
-response = await agent.process_message(
-    user_id="user_123", 
-    message="Hello, how can you help me?"
-)
-print(response)
+# Chat with the agent via API
+async with httpx.AsyncClient() as client:
+    response = await client.post(
+        "http://localhost:9000/chat",
+        json={
+            "user_id": "user_123",
+            "message": "Hello, how can you help me?"
+        }
+    )
+    print(response.json())
 ~~~
 
 **Note:** The conversation chain and personality system require implementing your own business logic using the provided stub files as templates.
@@ -161,8 +182,9 @@ print(response)
 ## 6. Prompt & Tool Versioning  
 - Keep **all prompt files in `prompts/`**, no hard-coded strings.  
 - Each change => bump prompt version (e.g., `system_v3.j2`).  
-- Use `sync_prompts.py` to push/pull from secure S3/Git-crypt store.  
-- Tools are registered in `tools/registry.py` with versioned contracts.
+- Prompts use Jinja2 templating with structured JSON response schemas.  
+- Tools are registered in `tools/registry.py` with versioned contracts.  
+- Context files in `_context/` provide domain knowledge and personality framework.
 
 ---
 
@@ -190,10 +212,11 @@ pytest -q
 
 ## 9. Roadmap  
 - Multi-agent subteams (planner, critic, executor)  
-- Structured output enforcement (json schema tool calls)  
+- Enhanced structured output with improved JSON schemas  
 - RLHF-lite loop using user thumbs-up/down  
 - Realtime streaming support (server-sent events)  
-- Fine-grained AB tests on prompt variants
+- Fine-grained AB tests on prompt variants  
+- Integration with ChatGPT OSS 120B for complex reasoning tasks
 
 ---
 
