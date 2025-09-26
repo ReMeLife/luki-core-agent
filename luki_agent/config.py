@@ -1,122 +1,60 @@
-"""Configuration management for LUKi Agent
-
-Handles environment variables, model settings, service URLs, and feature flags.
-Uses Pydantic for validation and type safety.
-"""
+"""Configuration management for LUKi Agent."""
 
 import os
-from typing import Optional, List
-from pydantic_settings import BaseSettings
-from pydantic import Field
+from typing import Dict, Any
 
-
-class LukiAgentSettings(BaseSettings):
-    """Configuration settings for LUKi Agent"""
-    
-    # Service Configuration
+class AppSettings:
+    # Service Info
     service_name: str = "luki-core-agent"
-    service_version: str = "0.1.0"
-    environment: str = "development"
-    debug: bool = True
-    
-    # Server Configuration
+    environment: str = os.getenv("ENVIRONMENT", "production")
+
+    # Server
     host: str = "0.0.0.0"
-    port: int = 9000
-    
-    # Model Configuration
-    model_backend: str = "together_ai"  # together_ai, openai, llama3_local, llama3_hosted
-    model_name: str = "openai/gpt-oss-120b"
+    port: int = int(os.getenv("PORT", 8000))
+
+    # Default model backend to use
+    default_backend: str = "together"
+
+    # Model Backend Configurations
+    model_config: Dict[str, Any] = {
+        "together": {
+            "provider": "together",
+            # Prefer a faster model by default; allow override via env
+            "model_name": os.getenv("LUKI_PRIMARY_MODEL", "openai/gpt-oss-20b"),
+            "api_key": os.getenv("TOGETHER_API_KEY")
+        },
+        "local_llama": {
+            "provider": "local_llama",
+            "model_name": os.getenv("LOCAL_MODEL_PATH", "path/to/local/model"),
+            "model_path": os.getenv("LOCAL_MODEL_PATH", "path/to/local/model"),
+            "device": "auto"
+        }
+    }
+
+    # General Model Parameters
     model_temperature: float = 0.7
-    max_tokens: int = 2048
-    
-    # OpenAI Configuration
-    openai_api_key: Optional[str] = None
-    openai_organization: Optional[str] = None
-    
-    # Together AI Configuration
-    together_api_key: Optional[str] = None
-    
-    # Hosted Model Configuration (generic)
-    hosted_api_key: Optional[str] = None
-    
-    # Local Model Configuration
-    local_model_path: Optional[str] = None
-    device: str = "auto"  # auto, cpu, cuda
-    
-    # Context Configuration
-    max_context_tokens: int = 2048
-    retrieval_top_k: int = 6
-    conversation_buffer_size: int = 20
-    
-    # Memory Service Configuration
-    memory_service_url: str = "http://localhost:8002"
-    memory_service_timeout: int = 30
-    
-    # Authentication
-    modules_token: Optional[str] = None
-    internal_api_key: Optional[str] = None
-    
-    # Safety and Compliance
-    enable_safety_filters: bool = True
-    enable_pii_redaction: bool = True
-    enable_consent_checking: bool = True
-    
-    # Logging and Telemetry
-    log_level: str = "INFO"
-    structured_logging: bool = True
-    enable_metrics: bool = True
-    enable_tracing: bool = True
-    jaeger_endpoint: Optional[str] = None
-    
-    # Redis Configuration (for caching and session storage)
-    redis_url: str = "redis://localhost:6379"
-    redis_password: Optional[str] = None
-    
-    # Feature Flags
-    enable_streaming: bool = True
-    enable_tool_use: bool = True
-    enable_memory_updates: bool = True
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        env_prefix = "LUKI_"
-        extra = "ignore"
+    max_tokens: int = 32768  # Use model's full capacity
 
+    # Context & Memory
+    conversation_buffer_size: int = 10
+    retrieval_top_k: int = 5
+    memory_service_timeout: int = 20
 
-# Global settings instance
-settings = LukiAgentSettings()
+    # Module Service URLs
+    memory_service_url: str = os.getenv("MEMORY_SERVICE_URL", "http://localhost:8002")
+    cognitive_service_url: str = os.getenv("LUKI_COGNITIVE_SERVICE_URL", "http://localhost:8101")
+    engagement_service_url: str = os.getenv("LUKI_ENGAGEMENT_SERVICE_URL", "http://localhost:8102")
+    security_service_url: str = os.getenv("LUKI_SECURITY_SERVICE_URL", "http://localhost:8103")
+    reporting_service_url: str = os.getenv("LUKI_REPORTING_SERVICE_URL", "http://localhost:8104")
 
+settings = AppSettings()
 
-def get_context_config() -> dict:
-    """Get context-specific configuration"""
-    return {
-        "max_context_tokens": settings.max_context_tokens,
-        "retrieval_top_k": settings.retrieval_top_k,
-        "conversation_buffer_size": settings.conversation_buffer_size,
-        "enable_memory_updates": settings.enable_memory_updates,
-    }
-
-
-def get_model_config() -> dict:
-    """Get model-specific configuration"""
-    return {
-        "backend": settings.model_backend,
-        "model_name": settings.model_name,
-        "name": settings.model_name,
-        "temperature": settings.model_temperature,
-        "max_tokens": settings.max_tokens,
-        "device": settings.device,
-        "api_key": settings.together_api_key or settings.hosted_api_key,
-        "openai_api_key": settings.openai_api_key,
-    }
-
-
-def get_safety_config() -> dict:
-    """Get safety and compliance configuration"""
-    return {
-        "enable_safety_filters": settings.enable_safety_filters,
-        "enable_pii_redaction": settings.enable_pii_redaction,
-        "enable_consent_checking": settings.enable_consent_checking,
-    }
+def get_model_config(backend_name: str) -> Dict[str, Any]:
+    """Retrieve and enrich the configuration for a specific model backend."""
+    backend_conf = settings.model_config.get(backend_name)
+    if not backend_conf:
+        raise ValueError(f"No configuration found for model backend: '{backend_name}'")
+    
+    backend_conf['temperature'] = settings.model_temperature
+    backend_conf['max_tokens'] = settings.max_tokens
+    return backend_conf
