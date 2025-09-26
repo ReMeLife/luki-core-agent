@@ -41,11 +41,11 @@ class AppSettings:
     memory_service_timeout: int = 20
 
     # Module Service URLs
-    memory_service_url: str = os.getenv("MEMORY_SERVICE_URL", "https://luki-memory-service-production.up.railway.app/")
-    cognitive_service_url: str = os.getenv("LUKI_COGNITIVE_SERVICE_URL", "https://luki-modules-cognitive-production.up.railway.app")
-    engagement_service_url: str = os.getenv("LUKI_ENGAGEMENT_SERVICE_URL", "https://luki-modules-engagement-production.up.railway.app")
-    security_service_url: str = os.getenv("LUKI_SECURITY_SERVICE_URL", "https://luki-security-privacy-production.up.railway.app")
-    reporting_service_url: str = os.getenv("LUKI_REPORTING_SERVICE_URL", "https://luki-modules-reporting-production.up.railway.app")
+    memory_service_url: str = os.getenv("MEMORY_SERVICE_URL", "http://localhost:8002")
+    cognitive_service_url: str = os.getenv("LUKI_COGNITIVE_SERVICE_URL", "http://localhost:8101")
+    engagement_service_url: str = os.getenv("LUKI_ENGAGEMENT_SERVICE_URL", "http://localhost:8102")
+    security_service_url: str = os.getenv("LUKI_SECURITY_SERVICE_URL", "http://localhost:8103")
+    reporting_service_url: str = os.getenv("LUKI_REPORTING_SERVICE_URL", "http://localhost:8104")
 
 settings = AppSettings()
 
