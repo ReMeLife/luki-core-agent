@@ -41,15 +41,18 @@ class UserMemoryStats:
 class MemoryServiceClient:
     """Client for LUKi Memory Service API"""
     
-    def __init__(self, base_url: str = "http://localhost:8002", timeout: int = 30):
+    def __init__(self, base_url: Optional[str] = None, timeout: Optional[int] = None):
         """Initialize memory service client
         
         Args:
-            base_url: Base URL of the memory service API
-            timeout: Request timeout in seconds
+            base_url: Base URL of the memory service API (defaults to config)
+            timeout: Request timeout in seconds (defaults to config)
         """
-        self.base_url = base_url.rstrip('/')
-        self.timeout = timeout
+        # Import here to avoid circular imports
+        from ..config import settings
+        
+        self.base_url = (base_url or settings.memory_service_url).rstrip('/')
+        self.timeout = timeout or settings.memory_service_timeout
         self._session: Optional[aiohttp.ClientSession] = None
         self._auth_token: Optional[str] = None
     
