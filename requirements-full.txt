@@ -1,0 +1,38 @@
+# Full LUKi Core Agent requirements for Railway deployment
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+
+# HTTP clients
+requests==2.31.0
+httpx==0.25.0
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# ML and AI dependencies (CPU-optimized for Railway)
+torch==2.1.0
+transformers==4.35.0
+sentence-transformers==2.2.2
+numpy==1.24.3
+scikit-learn==1.3.0
+
+# LangChain ecosystem
+langchain==0.0.340
+langchain-community==0.0.1
+langchain-openai==0.0.2
+openai==1.3.0
+
+# Vector database and embeddings
+chromadb==0.4.15
+faiss-cpu==1.7.4
+
+# Data processing
+pandas==2.0.3
+tiktoken==0.5.1
+
+# Logging and monitoring
+structlog==23.1.0
