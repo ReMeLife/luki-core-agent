@@ -1,0 +1,68 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Python cache and virtual environments
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+venv/
+env/
+ENV/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+
+# Documentation and markdown files
+# Keep markdown by default to allow ProjectKB ingestion
+# If you want to exclude top-level docs, comment these back in selectively
+# docs/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# Development scripts
+scripts/run_dev*.py
+
+# Railway specific
+.railwayignore
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage reports
+htmlcov/
+.coverage
+.pytest_cache/
+
+# --- Allowlist: include private runtime assets in Docker build ---
+# These are gitignored but should be present when deploying via CLI from local workspace
+!_context/**
+!prompts/**

@@ -1,0 +1,29 @@
+# Railway Ignore File
+# This file tells Railway what to exclude from deployment
+# Unlike .gitignore, we want to INCLUDE the gitignored files for deployment
+
+# Standard exclusions for Railway
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.env.local
+.env.development
+.env.test
+
+# Exclude development files
+.vscode/
+.idea/
+*.log
+logs/
+
+# Keep all the git ignored files that are needed for deployment
+# (by NOT listing them here, they will be included)
+# EXPLICITLY ALLOW: _context/ and prompts/ must be included despite being gitignored
+!_context/
+!prompts/
+
+# Exclude legacy reference code (do not upload to Railway)
+luki_agent/chains/
+_legacy/
