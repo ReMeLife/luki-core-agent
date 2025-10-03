@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from .config import settings, get_model_config
 from .schemas import LUKiResponse, LUKiMinimalResponse
 from .prompt_registry import prompt_registry
+from .tools.web_search import WebSearchTool
 
 @dataclass
 class ModelResponse:
@@ -76,13 +77,194 @@ class TogetherAIBackend(LLMBackend):
         self.structured_timeout = int(os.getenv("LUKI_STRUCTURED_TIMEOUT", "20"))
         self.fast_fallback_tokens = int(os.getenv("LUKI_FALLBACK_MAX_TOKENS", "256"))
         self.fallback_model = os.getenv("LUKI_FALLBACK_MODEL")  # optional override model for fallback
+        
+        # Initialize web search tool (gracefully handle missing API key)
+        try:
+            self.web_search_tool = WebSearchTool()
+            print("✅ Web search tool enabled")
+        except (ValueError, ImportError) as e:
+            print(f"⚠️  Web search tool disabled: {e}")
+            self.web_search_tool = None
+        
         print(f"✅ Together AI backend initialized: {self.model_name} with max_tokens={self.max_tokens}")
 
-    async def generate(self, prompt: Dict[str, Any], **kwargs) -> ModelResponse:
-        system_content = f"{prompt['system_prompt']}\n{prompt['retrieval_context']}\n{prompt['conversation_history']}"
+    async def _check_and_execute_web_search(
+        self,
+        messages: list[Dict[str, str]],
+        user_input: str
+    ) -> Optional[str]:
+        """
+        Check if user's question needs web search and execute if needed.
         
-        # Debug: Log system content length
-        print(f"🔍 System content length: {len(system_content)} characters (~{len(system_content)//4} tokens)")
+        Returns:
+            Search results as formatted string if search was needed, None otherwise.
+        """
+        if not self.web_search_tool:
+            return None
+        
+        # Quick heuristic check: does the question likely need current info?
+        needs_search = await self._needs_web_search(user_input)
+        if not needs_search:
+            return None
+        
+        try:
+            print("🔍 Web search triggered - analyzing query...")
+            
+            # Generate search query using simple keyword extraction
+            # Fallback to original question if generation fails
+            search_query = self._generate_search_query(user_input)
+            print(f"🔍 Search query generated: {search_query}")
+            
+            # Execute search
+            search_results = self.web_search_tool.search(search_query, max_results=3)
+            
+            if search_results.get("success"):
+                formatted_results = self.web_search_tool.format_results_for_llm(search_results)
+                print(f"✅ Search completed: {len(search_results.get('results', []))} results")
+                return formatted_results
+            else:
+                print(f"⚠️  Search failed: {search_results.get('error')}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Web search error: {e}")
+            return None
+    
+    def _generate_search_query(self, user_input: str) -> str:
+        """
+        Generate optimized search query from user input using simple heuristics.
+        Falls back to original question if extraction fails.
+        """
+        import re
+        from datetime import datetime
+        
+        user_lower = user_input.lower()
+        current_year = datetime.now().year
+        
+        # Pattern: "who is the [role] of [location]" → "[role] of [location] {year}"
+        role_match = re.search(r'who (?:is|\'s) (?:the )?(?:current )?(prime minister|pm|president|ceo|leader|king|queen)(?: of)? (?:the )?(\w+)', user_lower, re.IGNORECASE)
+        if role_match:
+            role = "Prime Minister" if role_match.group(1).lower() in ["pm", "prime minister"] else role_match.group(1).title()
+            location = role_match.group(2).upper() if len(role_match.group(2)) <= 3 else role_match.group(2).title()
+            return f"{location} {role} {current_year}"
+        
+        # Pattern: "what is the latest/newest [thing]" → "latest [thing] {year}"
+        latest_match = re.search(r'(?:what is |what\'s )?(?:the )?(latest|newest|current|new) (.+?)[\?\.!]?$', user_lower, re.IGNORECASE)
+        if latest_match:
+            thing = latest_match.group(2).strip()
+            return f"latest {thing} {current_year}"
+        
+        # If user explicitly says "search" - extract the search terms
+        search_match = re.search(r'search(?: for| online| the (?:internet|web))?(?: for)?\s+(.+?)[\?\.!]?$', user_lower, re.IGNORECASE)
+        if search_match:
+            query = search_match.group(1).strip()
+            if query:
+                return f"{query} {current_year}"
+        
+        # Default: use the original question with current year appended
+        clean_query = user_input.strip().rstrip('?.!')
+        return f"{clean_query} {current_year}"
+    
+    def _clean_response(self, text: str) -> str:
+        """Remove HTML tags, numbered citations, and other artifacts from response."""
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        # Remove numbered citations like (1), [1], etc.
+        text = re.sub(r'\([0-9]+\)', '', text)
+        text = re.sub(r'\[[0-9]+\]', '', text)
+        # Remove <web_search_used> tags that might leak through
+        text = re.sub(r'<web_search_used>.*?</web_search_used>', '', text, flags=re.IGNORECASE)
+        # Also remove plain web_search_used markers without tags
+        text = text.replace('<web_search_used>true</web_search_used>', '')
+        text = text.replace('<web_search_used>false</web_search_used>', '')
+        
+        # CRITICAL: Convert escaped markdown back to proper formatting
+        # The model sometimes generates literal \n instead of actual newlines
+        text = text.replace('\\n', '\n')
+        # Convert markdown list markers from escaped to actual
+        text = re.sub(r'\\([*\-])', r'\1', text)
+        
+        # Clean up extra spaces on same line (but preserve newlines for formatting)
+        text = re.sub(r'[ \t]+', ' ', text)
+        # Remove excessive blank lines (max 2 newlines in a row)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+    
+    async def _needs_web_search(self, user_input: str) -> bool:
+        """
+        Quick heuristic to determine if question likely needs web search.
+        Uses pattern matching for speed.
+        """
+        user_lower = user_input.lower()
+        
+        # Trigger keywords for current information
+        current_triggers = [
+            "who is", "who's", "current", "latest", "recent", "now", "today",
+            "2024", "2025", "this year", "prime minister", "pm of", "president",
+            "new", "newest", "what happened", "news about", "search for", "search online"
+        ]
+        
+        # Skip keywords (things we handle without search - about our platform/company)
+        skip_triggers = [
+            "what is remegrid", "what is remelife", "what is luki", "tell me about luki",
+            "$luki token", "reme token", "caps token", "what are caps",
+            "who is simon hooper", "how do i use", "what is your purpose", 
+            "tell me about yourself", "what can you do"
+        ]
+        
+        # Check if we should skip
+        for skip in skip_triggers:
+            if skip in user_lower:
+                return False
+        
+        # Check if we should search
+        for trigger in current_triggers:
+            if trigger in user_lower:
+                return True
+        
+        return False
+
+    async def generate(self, prompt: Dict[str, Any], **kwargs) -> ModelResponse:
+        # Format conversation history prominently if it exists
+        conversation_history = prompt.get('conversation_history', '').strip()
+        if conversation_history:
+            system_content = f"{prompt['system_prompt']}\n\n{conversation_history}\n{prompt['retrieval_context']}"
+        else:
+            system_content = f"{prompt['system_prompt']}\n{prompt['retrieval_context']}"
+        
+        # Debug: Log system content length and conversation status
+        has_history = bool(conversation_history)
+        print(f"🔍 System content length: {len(system_content)} chars | Has conversation history: {has_history}")
+        
+        # Check if web search is needed and execute
+        search_results_text = await self._check_and_execute_web_search(
+            [],  # We don't need messages for heuristic check
+            prompt['user_input']
+        )
+        
+        # Track if web search was used (for UI indicator)
+        web_search_used = bool(search_results_text)
+        
+        # If search was performed, append results to system content
+        if search_results_text:
+            system_content = (
+                f"{system_content}\n\n"
+                f"[WEB SEARCH RESULTS]\n"
+                f"{search_results_text}\n"
+                f"[END WEB SEARCH RESULTS]\n\n"
+                f"CRITICAL INSTRUCTIONS FOR WEB SEARCH:\n"
+                f"1. Set web_search_used=true in your response\n"
+                f"2. Use web search ONLY for current events, news, and real-time information\n"
+                f"3. NEVER let web search override these VERIFIED FACTS from your knowledge base:\n"
+                f"   - Simon Hooper is the Founder and CEO of ReMeLife and LUKi (NOT Dr. Jane Thomason or anyone else)\n"
+                f"   - ReMeGrid is a user-facing memory/photo grid feature (NOT the blockchain)\n"
+                f"   - Convex Lattice is the blockchain infrastructure (NOT ReMeGrid)\n"
+                f"   - The team members and platform facts in your system prompt are ALWAYS correct\n"
+                f"4. When citing sources, use plain text only - NEVER use HTML tags like <span>, <div>, etc.\n"
+                f"5. Never use numbered citations like (1) or [1] - just mention the source name plainly\n"
+                f"6. If web search contradicts your core knowledge, trust your core knowledge"
+            )
+            print(f"✅ Web search results added to context ({len(search_results_text)} chars)")
         
         messages = [
             {"role": "system", "content": system_content},
@@ -179,6 +361,8 @@ class TogetherAIBackend(LLMBackend):
                     content = re.sub(r'(?im)^(thought|analysis|reflection)\s*:\s*.*$', '', content)
                     content = re.sub(r'<\|[^|]*\|>', '', content)
                     content = content.strip()
+                    # Clean response from HTML and citations
+                    content = self._clean_response(content)
                     return ModelResponse(content=content, model=raw_model, metadata={"fallback": True, "reason": "trivial_input"})
                 except Exception as fe:
                     trivial_last_error = fe
@@ -296,7 +480,9 @@ class TogetherAIBackend(LLMBackend):
             except Exception as ac_e:
                 print(f"⚠️ Auto-continue failed: {ac_e}")
 
-            return ModelResponse(content=content, model=self.model_name, metadata=metadata)
+            # Clean the response before returning
+            cleaned_content = self._clean_response(content)
+            return ModelResponse(content=cleaned_content, model=self.model_name, metadata=metadata)
         except Exception as e:
             print(f"❌ API call failed: {str(e)}")
             print(f"❌ Error type: {type(e).__name__}")
@@ -395,6 +581,8 @@ class TogetherAIBackend(LLMBackend):
                 content = re.sub(r'(?im)^(thought|analysis|reflection)\s*:\s*.*$', '', content)
                 content = re.sub(r'<\|[^|]*\|>', '', content)
                 content = content.strip()
+                # Clean response from HTML and citations
+                content = self._clean_response(content)
                 print("✅ Fallback call succeeded; returning sanitized content")
                 return ModelResponse(
                     content=content,
