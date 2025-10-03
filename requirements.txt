@@ -38,6 +38,9 @@ cryptography==41.0.7
 redis==5.0.1
 structlog==23.2.0
 
+# Web search for current information
+tavily-python==0.3.0
+
 # Monitoring - minimal versions
 opentelemetry-api==1.21.0
 opentelemetry-sdk==1.21.0
