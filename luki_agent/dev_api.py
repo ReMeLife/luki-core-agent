@@ -240,17 +240,29 @@ async def chat(request: ChatRequest):
         logger.info(
             f"🔍 Step 3: Building context with {len(proj_docs)} project docs and {len(user_memories)} user memories..."
         )
+        
+        # Log actual memory content for debugging
+        if user_memories:
+            logger.info(f"📦 User memories content:")
+            for idx, mem in enumerate(user_memories[:3]):  # Log first 3
+                logger.info(f"  Memory {idx}: {mem.get('content', '')[:100]}...")
 
-        # Combine docs first (project KB) then user memories
-        combined_context = (proj_docs or []) + (user_memories or [])
-
+        # CRITICAL FIX: Keep project docs and user memories SEPARATE
+        # Project docs are for knowledge, user memories are personal data
+        # We'll pass them separately to the context builder
+        
         context_result = await context_builder.build(
             user_input=request.message,
             user_id=request.user_id,
             conversation_history=request.context.get("conversation_history", []) if request.context else [],
-            memory_context=combined_context
+            memory_context=user_memories,  # ONLY user memories here
+            knowledge_context=proj_docs     # Project knowledge separate
         )
         logger.info(f"✅ Step 3: Context built successfully")
+        
+        # Log what's in the context result
+        if context_result.get("final_prompt", {}).get("retrieval_context"):
+            logger.info(f"📦 Retrieval context passed to LLM: {context_result['final_prompt']['retrieval_context'][:200]}...")
 
         logger.info(f"🔍 Step 4: Generating LLM response...")
         response = await llm_manager.generate(prompt=context_result["final_prompt"])

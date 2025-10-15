@@ -61,7 +61,7 @@ class ContextBuilder:
             'system_core': 800,      # Core system prompt
             'persona': 300,          # Personality traits
             'user_guidance': 200,    # User-specific guidance
-            'retrieval_context': 700, # ELR/memory context (increased for broader coverage)
+            'retrieval_context': 1200, # ELR/memory context (increased to allow fuller memories)
             'conversation_history': 300, # Recent conversation
             'safety_rules': 200      # Safety guidelines
         }
@@ -70,16 +70,15 @@ class ContextBuilder:
         self,
         user_input: str,
         user_id: str,
-        conversation_history: List[Dict[str, Any]],
-        handler_type: str = "general_chat",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         memory_context: Optional[List[Dict[str, Any]]] = None,
-        **kwargs
+        knowledge_context: Optional[List[Dict[str, Any]]] = None,  # NEW: Separate knowledge
+        personality_mode: str = "default",
+        include_safety: bool = True
     ) -> Dict[str, Any]:
         """Build context with strict slot separation and sanitization"""
         
         # Build system prompt using registry with compact routing for short inputs
-        personality_mode = kwargs.get("personality_mode", "default")
-        include_safety = True
         compact = len(user_input.strip()) <= 40
         if compact:
             # Use minimal core to reduce token overhead
@@ -103,15 +102,23 @@ class ContextBuilder:
         retrieval_context = ""
         
         if memory_context:
+            # Log what we received
+            print(f"📦 ContextBuilder: Received {len(memory_context)} memory items")
+            
             # Sanitize and filter memory context
             sanitized_memories = []
-            for item in memory_context[:5]:  # Limit to top 5 for expanded knowledge
+            for item in memory_context[:10]:  # Increase limit to show more memories
                 content = item.get("content", "")
                 sanitized_content = sanitize_retrieval_context(content)
                 
+                # Log each memory being processed
+                if sanitized_content:
+                    print(f"  Processing memory: {sanitized_content[:50]}...")
+                
                 if sanitized_content and len(sanitized_content) > 10:
-                    # Truncate to fit budget
-                    max_length = self.slot_budgets['retrieval_context'] // 3
+                    # Don't truncate memories too aggressively - allow fuller content
+                    # With retrieval_context budget of 1200, this gives us 400 chars per memory
+                    max_length = min(600, self.slot_budgets['retrieval_context'] // 3)
                     if len(sanitized_content) > max_length:
                         # Truncate at sentence boundary
                         truncated = sanitized_content[:max_length]
@@ -125,6 +132,24 @@ class ContextBuilder:
             
             if sanitized_memories:
                 retrieval_context = "\n\nRelevant Context:\n" + "\n".join(f"- {mem}" for mem in sanitized_memories)
+                print(f"🎉 ContextBuilder: Built retrieval context with {len(sanitized_memories)} memories")
+            else:
+                print(f"⚠️ ContextBuilder: No valid memories after sanitization")
+        
+        # Build knowledge context SEPARATELY from memories
+        knowledge_text = ""
+        if knowledge_context:
+            print(f"📚 ContextBuilder: Processing {len(knowledge_context)} knowledge items")
+            knowledge_items = []
+            for item in knowledge_context[:5]:  # Limit knowledge items
+                content = item.get("content", "")
+                if content:
+                    # Don't sanitize knowledge too aggressively - it's trusted content
+                    knowledge_items.append(content[:200])  # Truncate each to 200 chars
+            
+            if knowledge_items:
+                knowledge_text = "\n\nPlatform Knowledge:\n" + "\n".join(f"- {k}" for k in knowledge_items)
+                print(f"🎯 ContextBuilder: Built knowledge context with {len(knowledge_items)} items")
         
         # Build conversation context with token budget
         conversation_context = ""
@@ -157,7 +182,8 @@ class ContextBuilder:
         # Assemble final context with slot separation
         context_slots = {
             'system_prompt': system_prompt,
-            'retrieval_context': retrieval_context,
+            'retrieval_context': retrieval_context,  # User memories ONLY
+            'knowledge_context': knowledge_text,      # Platform knowledge ONLY
             'conversation_context': conversation_context,
             'current_input': f"\n\nUser: {user_input}\nAssistant:"
         }
@@ -184,9 +210,11 @@ class ContextBuilder:
         # Build the final prompt as a structured dictionary for the instructor library
         final_prompt = {
             "system_prompt": context_slots.get('system_prompt', ''),
-            "retrieval_context": context_slots.get('retrieval_context', ''),
+            "retrieval_context": context_slots.get('retrieval_context', ''),  # User memories
+            "knowledge_context": context_slots.get('knowledge_context', ''),  # Platform knowledge
             "conversation_history": context_slots.get('conversation_context', ''),
-            "user_input": user_input  # Pass the raw user input separately
+            "user_input": user_input,  # Pass the raw user input separately
+            "user_id": user_id  # Include user_id for function calling decisions
         }
 
         # Calculate final token count based on a representative string version

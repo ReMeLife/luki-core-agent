@@ -45,7 +45,27 @@ class LUKiMinimalResponse(BaseModel):
     Minimal fallback schema when structured reasoning times out or fails.
     """
     final_response: str = Field(
-        description="User-facing response with natural, subtle personality (fallback mode)."
+        description="USER-FACING RESPONSE - The final, polished response written in the LUKi persona. Be sharp, witty, and competent. Use subtle expressions like *chuckles*, *grins*, *nods* occasionally when they enhance the response - not in every message. Focus on being impressively helpful with natural personality, not forced cuteness."
+    )
+
+class MemoryDetectionResponse(BaseModel):
+    """
+    Schema specifically for memory detection tasks.
+    Used when analyzing if a user message contains memory-worthy content.
+    """
+    is_memory: bool = Field(
+        description="Whether the message contains memory-worthy content (preference, experience, fact, or goal)"
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="Extracted memory content if is_memory=true, otherwise null"
+    )
+    type: Optional[str] = Field(
+        default=None,
+        description="Type of memory: 'preference', 'experience', 'fact', or 'goal'. Null if is_memory=false"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why this is or isn't memory-worthy"
     )
 
 class MemoryToWrite(BaseModel):
