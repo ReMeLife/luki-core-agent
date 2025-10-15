@@ -1,15 +1,17 @@
-"""LLM Backend Implementations for the LUKi Agent."""
+"""LLM Backend Implementations for LUKi Agent
 
-import asyncio
-import os
+This module provides concrete implementations of LLM backends.
+Deploy: 2025-10-05T18:51:00"""
 import json
 import re
+import os
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any, AsyncGenerator
 from dataclasses import dataclass
 
 from .config import settings, get_model_config
-from .schemas import LUKiResponse, LUKiMinimalResponse
+from .schemas import LUKiResponse, LUKiMinimalResponse, MemoryDetectionResponse
 from .prompt_registry import prompt_registry
 from .tools.web_search import WebSearchTool
 
@@ -227,10 +229,11 @@ class TogetherAIBackend(LLMBackend):
     async def generate(self, prompt: Dict[str, Any], **kwargs) -> ModelResponse:
         # Format conversation history prominently if it exists
         conversation_history = prompt.get('conversation_history', '').strip()
+        # Build base system content without retrieval_context (we'll add it later with instructions)
         if conversation_history:
-            system_content = f"{prompt['system_prompt']}\n\n{conversation_history}\n{prompt['retrieval_context']}"
+            system_content = f"{prompt['system_prompt']}\n\n{conversation_history}"
         else:
-            system_content = f"{prompt['system_prompt']}\n{prompt['retrieval_context']}"
+            system_content = prompt['system_prompt']
         
         # Debug: Log system content length and conversation status
         has_history = bool(conversation_history)
@@ -266,33 +269,91 @@ class TogetherAIBackend(LLMBackend):
             )
             print(f"✅ Web search results added to context ({len(search_results_text)} chars)")
         
+        # Include PLATFORM KNOWLEDGE (documentation) if available
+        knowledge_context = prompt.get('knowledge_context', '').strip()
+        if knowledge_context:
+            system_content = (
+                f"{system_content}\n\n"
+                f"## PLATFORM KNOWLEDGE (Reference Documentation):\n"
+                f"{knowledge_context}\n"
+                f"(Use this for answering questions about ReMeLife platform, features, etc.)\n"
+            )
+            print(f"📚 Platform knowledge added to context")
+        
+        # Include USER MEMORIES separately with anti-hallucination instructions
+        retrieval_context = prompt.get('retrieval_context', '').strip()
+        if retrieval_context:
+            # Add memories with STRONG anti-hallucination instructions
+            system_content = (
+                f"{system_content}\n\n"
+                f"## USER'S PERSONAL MEMORIES (USE ONLY THESE - DO NOT INVENT):\n"
+                f"{retrieval_context}\n\n"
+                f"## CRITICAL MEMORY INSTRUCTIONS:\n"
+                f"1. When user asks to 'list my memories' or similar:\n"
+                f"   - List the first 2-3 memories from above\n"
+                f"   - Then say something helpful like 'You can view all your memories in the Memory Panel' or 'Check out the full list in your memory panel'\n"
+                f"   - This prevents overwhelming responses and guides them to the panel\n"
+                f"2. You MUST ONLY reference memories explicitly listed above - NEVER invent or assume memories\n"
+                f"3. The above section contains PERSONAL memories (not platform documentation)\n"
+                f"4. If the above section is empty, say 'You don't have any saved memories yet'\n"
+                f"5. NEVER confuse platform knowledge with personal memories\n"
+                f"6. NEVER make up memories about birthdays, trips, family, or anything not explicitly listed"
+            )
+            print(f"✅ User memories added to context - Content: {retrieval_context[:200]}...")
+        else:
+            # No memories - add explicit instruction to say so
+            system_content = (
+                f"{system_content}\n\n"
+                f"## USER MEMORY STATUS: No saved personal memories found.\n"
+                f"If the user asks about their memories, inform them they don't have any saved yet.\n"
+                f"Note: Platform knowledge is different from personal memories."
+            )
+            print(f"⚠️ No retrieval_context in prompt - user has no saved memories")
+        
+        # Detect memory detection tasks (special routing)
+        user_id = prompt.get('user_id', '')
+        is_memory_detection = user_id == 'system_memory_detector'
+        
+        # For memory detection, use minimal system prompt to avoid schema conflicts
+        if is_memory_detection:
+            system_content = "You are a memory detection assistant. Analyze the user's message and respond in the exact JSON format requested."
+            print(f"🧠 Memory detection: using minimal system prompt to avoid schema conflicts")
+        
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt['user_input']}
         ]
-        # Choose schema mode (minimal for speed by default)
-        schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
-        use_minimal = schema_mode == "minimal"
-
-        # Dynamic max_tokens based on input length and schema mode
+        
+        # Dynamic max_tokens and schema selection
         user_len = len(prompt['user_input'].strip())
-        if use_minimal:
-            # More generous caps to reduce truncation while keeping speed reasonable
-            if user_len <= 120:
-                dyn_max = 1024
-            elif user_len <= 300:
-                dyn_max = 2048
-            else:
-                dyn_max = 3072
-            response_model = LUKiMinimalResponse
+        
+        if is_memory_detection:
+            # Memory detection uses dedicated schema and lower tokens
+            response_model = MemoryDetectionResponse
+            dyn_max = 512  # Memory detection is simple, needs less tokens
+            print(f"🧠 Memory detection mode: using MemoryDetectionResponse schema")
         else:
-            if user_len <= 120:
-                dyn_max = 2048
-            elif user_len <= 300:
-                dyn_max = 4096
+            # Regular chat: choose schema mode (minimal for speed by default)
+            schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
+            use_minimal = schema_mode == "minimal"
+            
+            if use_minimal:
+                # ENHANCED: Increased tokens to prevent truncation
+                if user_len <= 120:
+                    dyn_max = 2048  # Was 1024
+                elif user_len <= 300:
+                    dyn_max = 3072  # Was 2048
+                else:
+                    dyn_max = 4096  # Was 3072
+                response_model = LUKiMinimalResponse
             else:
-                dyn_max = 8192
-            response_model = LUKiResponse
+                if user_len <= 120:
+                    dyn_max = 3072  # Was 2048
+                elif user_len <= 300:
+                    dyn_max = 6144  # Was 4096
+                else:
+                    dyn_max = 8192
+                response_model = LUKiResponse
 
         # Build parameters with our settings taking absolute precedence
         final_params = {
@@ -389,16 +450,25 @@ class TogetherAIBackend(LLMBackend):
                 timeout=eff_timeout,
             )
             print(f"✅ API call successful, received response")
-            # Minimal schema does not have 'thought'
-            content = getattr(luki_response, "final_response", "")
+            
+            # Handle different response types
             metadata: Dict[str, Any] = {}
-            if hasattr(luki_response, "thought") and getattr(luki_response, "thought") is not None:
-                try:
-                    metadata["thought_process"] = luki_response.thought.model_dump()
-                except Exception:
-                    metadata["thought_process"] = "unavailable"
+            
+            if is_memory_detection:
+                # Memory detection returns JSON structure, not final_response
+                content = luki_response.model_dump_json()
+                metadata["schema"] = "memory_detection"
+                print(f"🧠 Memory detection result: {content[:200]}...")
             else:
-                metadata["schema"] = "minimal"
+                # Regular chat responses
+                content = getattr(luki_response, "final_response", "")
+                if hasattr(luki_response, "thought") and getattr(luki_response, "thought") is not None:
+                    try:
+                        metadata["thought_process"] = luki_response.thought.model_dump()
+                    except Exception:
+                        metadata["thought_process"] = "unavailable"
+                else:
+                    metadata["schema"] = "minimal"
             # Optional auto-continue if output likely cut near token budget
             try:
                 autocontinue_enabled = os.getenv("LUKI_AUTOCONTINUE", "true").lower() == "true"
@@ -594,7 +664,37 @@ class TogetherAIBackend(LLMBackend):
                 raise
 
     async def generate_stream(self, prompt: Dict[str, Any], **kwargs) -> AsyncGenerator[str, None]:
-        system_content = f"{prompt['system_prompt']}\n{prompt['retrieval_context']}\n{prompt['conversation_history']}"
+        # Build system content WITH SAME MEMORY INJECTION AS generate() method
+        conversation_history = prompt.get('conversation_history', '').strip()
+        if conversation_history:
+            system_content = f"{prompt['system_prompt']}\n\n{conversation_history}"
+        else:
+            system_content = prompt['system_prompt']
+        
+        # Include retrieval context (memories) with anti-hallucination instructions
+        retrieval_context = prompt.get('retrieval_context', '').strip()
+        if retrieval_context:
+            system_content = (
+                f"{system_content}\n\n"
+                f"## USER'S ACTUAL SAVED MEMORIES (USE ONLY THESE - DO NOT INVENT):\n"
+                f"{retrieval_context}\n\n"
+                f"## CRITICAL MEMORY INSTRUCTIONS:\n"
+                f"1. When user asks to 'list my memories' or similar, you MUST ONLY list what's shown above\n"
+                f"2. If the above section has 'Relevant Context:' with items, list those items\n"
+                f"3. If the above section is empty or missing, say 'You don't have any saved memories yet'\n"
+                f"4. NEVER make up memories about birthdays, trips, family, or anything not explicitly listed above\n"
+                f"5. The user's REAL memories are ONLY what's shown in the section above\n"
+                f"6. If you're unsure, say you don't have that information saved"
+            )
+            print(f"✅ [STREAM] User memories added to context - Content: {retrieval_context[:200]}...")
+        else:
+            system_content = (
+                f"{system_content}\n\n"
+                f"## USER MEMORY STATUS: No saved memories found.\n"
+                f"If the user asks about their memories, inform them they don't have any saved yet."
+            )
+            print(f"⚠️ [STREAM] No retrieval_context in prompt - user has no saved memories")
+        
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt['user_input']}
