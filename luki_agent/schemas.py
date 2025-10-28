@@ -43,9 +43,22 @@ class LUKiResponse(BaseModel):
 class LUKiMinimalResponse(BaseModel):
     """
     Minimal fallback schema when structured reasoning times out or fails.
+    Includes optional thought field to prevent validation errors when model tries to include reasoning.
     """
+    thought: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL INTERNAL REASONING - Brief thinking process (system use only, never shown to user)"
+    )
     final_response: str = Field(
-        description="USER-FACING RESPONSE - The final, polished response written in the LUKi persona. Be sharp, witty, and competent. Use subtle expressions like *chuckles*, *grins*, *nods* occasionally when they enhance the response - not in every message. Focus on being impressively helpful with natural personality, not forced cuteness."
+        description="USER-FACING RESPONSE - The final, polished response written in the LUKi persona. Be sharp, witty, and competent. Use subtle expressions like *chuckles*, *grins*, *nods* occasionally when they enhance the response - not in every message. Focus on being impressively helpful with natural personality, not forced cuteness. This is the ONLY part shown to the user."
+    )
+    web_search_used: bool = Field(
+        default=False,
+        description="METADATA - Set to true if web search results were used to answer this question. Used for UI indicators only, never shown to user."
+    )
+    knowledge_source: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL METADATA - Source of knowledge used (system tracking only)"
     )
 
 class MemoryDetectionResponse(BaseModel):
