@@ -229,8 +229,19 @@ async def chat(request: ChatRequest):
             try:
                 msg_len = len(request.message.strip())
                 if msg_len > 12:
-                    top_k = 3 if msg_len <= 80 else 5
-                    logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}")
+                    # CRITICAL: Smart top_k selection based on query complexity
+                    # Keyword-based boost ensures complete information for critical topics
+                    msg_lower = request.message.lower()
+                    
+                    # Boost retrieval for topics requiring comprehensive documentation
+                    if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
+                        top_k = 10  # Comprehensive coverage for tokenomics queries
+                    elif msg_len <= 80:
+                        top_k = 5  # Standard coverage for short queries
+                    else:
+                        top_k = 8  # Enhanced coverage for longer queries
+                    
+                    logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{request.message[:50]}...'")
                     proj_docs = kb.search(request.message, top_k=top_k)
                 else:
                     proj_docs = []
@@ -297,8 +308,19 @@ async def chat_stream(request: ChatRequest):
                 try:
                     msg_len = len(request.message.strip())
                     if msg_len > 12:
-                        top_k = 3 if msg_len <= 80 else 5
-                        logger.info(f"ProjectKB search (stream): msg_len={msg_len}, top_k={top_k}")
+                        # CRITICAL: Smart top_k selection based on query complexity
+                        # Keyword-based boost ensures complete information for critical topics
+                        msg_lower = request.message.lower()
+                        
+                        # Boost retrieval for topics requiring comprehensive documentation
+                        if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
+                            top_k = 10  # Comprehensive coverage for tokenomics queries
+                        elif msg_len <= 80:
+                            top_k = 5  # Standard coverage for short queries
+                        else:
+                            top_k = 8  # Enhanced coverage for longer queries
+                        
+                        logger.info(f"ProjectKB search (stream): msg_len={msg_len}, top_k={top_k}, query='{request.message[:50]}...'")
                         proj_docs = kb.search(request.message, top_k=top_k)
                     else:
                         proj_docs = []

@@ -54,16 +54,18 @@ class ContextBuilder:
     
     def __init__(self, memory_retriever=None):
         self.memory_retriever = memory_retriever
-        self.max_context_tokens = 2048
+        # CRITICAL: Increased context limit - modern LLMs support 128k+ tokens
+        # Previous limit of 2048 was causing unnecessary truncation
+        # Together AI models support much larger contexts
+        self.max_context_tokens = 16384  # 16k tokens for context (out of 128k+ model capacity)
         
-        # Token budget allocation per slot
+        # Token budget allocation per slot (generous budgets for accuracy)
         self.slot_budgets = {
-            'system_core': 800,      # Core system prompt
-            'persona': 300,          # Personality traits
-            'user_guidance': 200,    # User-specific guidance
-            'retrieval_context': 1200, # ELR/memory context (increased to allow fuller memories)
-            'conversation_history': 300, # Recent conversation
-            'safety_rules': 200      # Safety guidelines
+            'system_prompt': 4096,      # Full system prompt without truncation
+            'retrieval_context': 2048,  # User memories
+            'knowledge_context': 4096,  # Platform knowledge (NO truncation)
+            'conversation_history': 2048, # Recent conversation
+            'current_input': 512        # User query
         }
     
     async def build(
@@ -78,25 +80,24 @@ class ContextBuilder:
     ) -> Dict[str, Any]:
         """Build context with strict slot separation and sanitization"""
         
-        # Build system prompt using registry with compact routing for short inputs
-        compact = len(user_input.strip()) <= 40
-        if compact:
-            # Use minimal core to reduce token overhead
-            core = prompt_registry.load_prompt("system_core_min", "v1")
-            persona = prompt_registry.load_prompt("persona_luki", "v1")
-            # Call private helper for user guidance to maintain consistency
-            user_guidance = prompt_registry._get_user_guidance(user_id)
-            safety = prompt_registry.load_prompt("safety_rules", "v1") if include_safety else ""
-            components = [core, persona, user_guidance]
-            if safety:
-                components.append(safety)
-            system_prompt = "\n\n".join(components)
-        else:
-            system_prompt = prompt_registry.build_system_prompt(
-                user_id=user_id,
-                personality_mode=personality_mode,
-                include_safety=include_safety
-            )
+        # ALWAYS use FULL prompt for ALL users - no quality degradation for anonymous users
+        # The prompt_registry already handles auth status via _get_user_guidance()
+        # which adds appropriate messaging about ELR/memory access based on user_id
+        system_prompt = prompt_registry.build_system_prompt(
+            user_id=user_id,
+            personality_mode=personality_mode,
+            include_safety=include_safety
+        )
+        
+        # Determine auth status for logging
+        is_authenticated = (
+            user_id and 
+            user_id != 'anonymous_base_user' and
+            user_id.lower() not in ('anonymous', 'guest') and
+            not user_id.startswith('anonymous_')
+        )
+        auth_status = "authenticated" if is_authenticated else "anonymous"
+        print(f"✅ Using FULL prompt for {auth_status} user (query: {len(user_input)} chars)")
         
         # Build sanitized retrieval context
         retrieval_context = ""
@@ -105,15 +106,28 @@ class ContextBuilder:
             # Log what we received
             print(f"📦 ContextBuilder: Received {len(memory_context)} memory items")
             
-            # Sanitize and filter memory context
+            # Sanitize and filter memory context with temporal awareness
             sanitized_memories = []
             for item in memory_context[:10]:  # Increase limit to show more memories
                 content = item.get("content", "")
                 sanitized_content = sanitize_retrieval_context(content)
                 
+                # Extract timestamp if available
+                created_at = None
+                if "created_at" in item:
+                    try:
+                        # Handle both datetime objects and ISO strings
+                        if isinstance(item["created_at"], str):
+                            created_at = datetime.fromisoformat(item["created_at"].replace('Z', '+00:00'))
+                        elif isinstance(item["created_at"], datetime):
+                            created_at = item["created_at"]
+                    except (ValueError, TypeError) as e:
+                        print(f"  Warning: Failed to parse created_at timestamp: {e}")
+                
                 # Log each memory being processed
                 if sanitized_content:
-                    print(f"  Processing memory: {sanitized_content[:50]}...")
+                    date_str = f" (saved {created_at.strftime('%Y-%m-%d')})" if created_at else ""
+                    print(f"  Processing memory: {sanitized_content[:50]}...{date_str}")
                 
                 if sanitized_content and len(sanitized_content) > 10:
                     # Don't truncate memories too aggressively - allow fuller content
@@ -128,7 +142,33 @@ class ContextBuilder:
                         else:
                             sanitized_content = truncated + "..."
                     
-                    sanitized_memories.append(sanitized_content)
+                    # Format memory with timestamp if available
+                    if created_at:
+                        # Calculate how long ago
+                        now = datetime.now(created_at.tzinfo) if created_at.tzinfo else datetime.utcnow()
+                        days_ago = (now - created_at).days
+                        
+                        if days_ago == 0:
+                            time_context = "(saved today)"
+                        elif days_ago == 1:
+                            time_context = "(saved yesterday)"
+                        elif days_ago < 7:
+                            time_context = f"(saved {days_ago} days ago)"
+                        elif days_ago < 30:
+                            weeks_ago = days_ago // 7
+                            time_context = f"(saved {weeks_ago} week{'s' if weeks_ago > 1 else ''} ago)"
+                        elif days_ago < 365:
+                            months_ago = days_ago // 30
+                            time_context = f"(saved {months_ago} month{'s' if months_ago > 1 else ''} ago)"
+                        else:
+                            years_ago = days_ago // 365
+                            time_context = f"(saved {years_ago} year{'s' if years_ago > 1 else ''} ago)"
+                        
+                        formatted_memory = f"{sanitized_content} {time_context}"
+                    else:
+                        formatted_memory = sanitized_content
+                    
+                    sanitized_memories.append(formatted_memory)
             
             if sanitized_memories:
                 retrieval_context = "\n\nRelevant Context:\n" + "\n".join(f"- {mem}" for mem in sanitized_memories)
@@ -141,15 +181,18 @@ class ContextBuilder:
         if knowledge_context:
             print(f"📚 ContextBuilder: Processing {len(knowledge_context)} knowledge items")
             knowledge_items = []
-            for item in knowledge_context[:5]:  # Limit knowledge items
+            for item in knowledge_context[:8]:  # Use all retrieved chunks (increased from 5)
                 content = item.get("content", "")
                 if content:
-                    # Don't sanitize knowledge too aggressively - it's trusted content
-                    knowledge_items.append(content[:200])  # Truncate each to 200 chars
+                    # NO TRUNCATION - Use complete semantic chunks from ProjectKB
+                    # ProjectKB already returns semantically meaningful chunks
+                    # Truncating defeats the purpose of semantic chunking
+                    knowledge_items.append(content)  # FULL content, no character limits
             
             if knowledge_items:
                 knowledge_text = "\n\nPlatform Knowledge:\n" + "\n".join(f"- {k}" for k in knowledge_items)
-                print(f"🎯 ContextBuilder: Built knowledge context with {len(knowledge_items)} items")
+                total_chars = sum(len(k) for k in knowledge_items)
+                print(f"🎯 ContextBuilder: Built knowledge context with {len(knowledge_items)} items ({total_chars} chars total)")
         
         # Build conversation context with token budget
         conversation_context = ""
@@ -177,7 +220,22 @@ class ContextBuilder:
                         break
             
             if context_parts:
-                conversation_context = "\n\nRecent Conversation:\n" + "\n".join(context_parts)
+                # Calculate conversation depth
+                total_messages = len(conversation_history) if conversation_history else 0
+                conversation_context = (
+                    f"\n\n## RECENT CONVERSATION - Message #{total_messages} (ONGOING - NO GREETINGS!):\n" + 
+                    "\n".join(context_parts) +
+                    "\n\n## CRITICAL CONVERSATION RULES:\n"
+                    f"1. **CONVERSATION STATE**: You are at message #{total_messages} in an ongoing conversation\n"
+                    "2. **NEVER GREET**: Do not say 'Hey!', 'Hello!', 'Hi!' or introduce yourself mid-conversation\n"
+                    "3. **FOLLOW-UP DETECTION**: If user's message is clearly answering your previous question, treat it as such\n"
+                    "4. **SHORT RESPONSES**: Single words/locations are often answers, not new queries\n"
+                    "5. **CONTINUITY**: Reference earlier discussion when relevant, maintain natural flow\n"
+                    "6. **Examples:**\n"
+                    "   - You ask: 'Where are you checking weather?' → User says: 'london' → This is an ANSWER\n"
+                    "   - You ask: 'What type of help?' → User says: 'avatar' → This is an ANSWER\n"
+                    "   - Message #15: User asks question → DO NOT say 'Hey!' before answering\n"
+                )
         
         # Assemble final context with slot separation
         context_slots = {
@@ -198,14 +256,16 @@ class ContextBuilder:
                 slot_tokens[slot_name] = tokens
                 total_tokens += tokens
         
-        # Truncate if over budget (preserve system prompt priority)
+        # Only truncate if DRASTICALLY over budget (preserve accuracy)
         if total_tokens > self.max_context_tokens:
-            # Trim retrieval context first
-            if 'retrieval_context' in context_slots and context_slots['retrieval_context']:
+            print(f"⚠️ Context exceeds budget: {total_tokens} > {self.max_context_tokens}")
+            # Trim conversation history first (least critical for accuracy)
+            if 'conversation_context' in context_slots and context_slots['conversation_context']:
                 excess = total_tokens - self.max_context_tokens
-                current_length = len(context_slots['retrieval_context'])
-                new_length = max(100, current_length - (excess * 4))  # Rough char estimate
-                context_slots['retrieval_context'] = context_slots['retrieval_context'][:new_length] + "..."
+                current_length = len(context_slots['conversation_context'])
+                new_length = max(200, current_length - (excess * 4))
+                context_slots['conversation_context'] = context_slots['conversation_context'][:new_length] + "..."
+                print(f"📉 Trimmed conversation history to fit budget")
         
         # Build the final prompt as a structured dictionary for the instructor library
         final_prompt = {
