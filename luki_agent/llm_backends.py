@@ -97,6 +97,7 @@ class TogetherAIBackend(LLMBackend):
     ) -> Optional[str]:
         """
         Check if user's question needs web search and execute if needed.
+        Includes follow-up detection for multi-turn queries.
         
         Returns:
             Search results as formatted string if search was needed, None otherwise.
@@ -104,10 +105,18 @@ class TogetherAIBackend(LLMBackend):
         if not self.web_search_tool:
             return None
         
-        # Quick heuristic check: does the question likely need current info?
-        needs_search = await self._needs_web_search(user_input)
-        if not needs_search:
-            return None
+        # CRITICAL: Check if user is answering AI's previous location question
+        # Example: AI: "Where would you like to check weather?" → User: "london"
+        follow_up_search = self._detect_location_followup(messages, user_input)
+        if follow_up_search:
+            # User is answering a location question - trigger search with their answer
+            needs_search = True
+            print(f"🔍 Follow-up detected: User answering location question with '{user_input}'")
+        else:
+            # Quick heuristic check: does the question likely need current info?
+            needs_search = await self._needs_web_search(user_input)
+            if not needs_search:
+                return None
         
         try:
             print("🔍 Web search triggered - analyzing query...")
@@ -132,6 +141,41 @@ class TogetherAIBackend(LLMBackend):
             print(f"❌ Web search error: {e}")
             return None
     
+    def _detect_location_followup(self, messages: list[Dict[str, str]], user_input: str) -> bool:
+        """
+        Detect if user is answering AI's previous question about location.
+        
+        Returns:
+            True if this appears to be a location answer to AI's question, False otherwise.
+        """
+        # Check if user input is short (likely a location name)
+        words = user_input.strip().split()
+        if len(words) > 3:  # Too long to be a simple location answer
+            return False
+        
+        # Get last AI message from conversation
+        last_ai_message = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                last_ai_message = msg.get("content", "").lower()
+                break
+        
+        if not last_ai_message:
+            return False
+        
+        # Check if AI asked about location in previous message
+        location_patterns = [
+            "where", "which city", "which location", "what city",
+            "where are you", "where do you want", "which place"
+        ]
+        
+        # Also check for weather context
+        weather_context = any(word in last_ai_message for word in ["weather", "temperature", "forecast", "climate"])
+        
+        asked_location = any(pattern in last_ai_message for pattern in location_patterns)
+        
+        return asked_location and weather_context
+    
     def _generate_search_query(self, user_input: str) -> str:
         """
         Generate optimized search query from user input using simple heuristics.
@@ -142,6 +186,12 @@ class TogetherAIBackend(LLMBackend):
         
         user_lower = user_input.lower()
         current_year = datetime.now().year
+        
+        # CRITICAL: If input is very short (1-3 words), assume it's a location for weather
+        words = user_input.strip().split()
+        if len(words) <= 3 and not any(word in user_lower for word in ["is", "are", "was", "were", "the", "what", "who", "when"]):
+            # Likely a simple location answer - add "weather" context
+            return f"{user_input.strip()} weather"
         
         # Pattern: "who is the [role] of [location]" → "[role] of [location] {year}"
         role_match = re.search(r'who (?:is|\'s) (?:the )?(?:current )?(prime minister|pm|president|ceo|leader|king|queen)(?: of)? (?:the )?(\w+)', user_lower, re.IGNORECASE)
@@ -174,17 +224,43 @@ class TogetherAIBackend(LLMBackend):
         # Remove numbered citations like (1), [1], etc.
         text = re.sub(r'\([0-9]+\)', '', text)
         text = re.sub(r'\[[0-9]+\]', '', text)
-        # Remove <web_search_used> tags that might leak through
-        text = re.sub(r'<web_search_used>.*?</web_search_used>', '', text, flags=re.IGNORECASE)
-        # Also remove plain web_search_used markers without tags
-        text = text.replace('<web_search_used>true</web_search_used>', '')
-        text = text.replace('<web_search_used>false</web_search_used>', '')
+        
+        # CRITICAL: Remove ALL metadata leakage patterns
+        # Remove web_search_used in any form (tags, plain text, key=value format)
+        text = re.sub(r'<web_search_used>.*?</web_search_used>', '', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'\bweb_search_used\s*=\s*(true|false)\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bweb_search_used:\s*(true|false)\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\"web_search_used\"\s*:\s*(true|false)', '', text, flags=re.IGNORECASE)
+        
+        # Remove other potential metadata leakage patterns
+        text = re.sub(r'\bconfidence_score\s*=\s*[\d.]+\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bknowledge_source\s*=\s*\w+\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\binternal_analysis\s*[:=].*?\n', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bthought\s*[:=].*?\n', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bmetadata\s*[:=]', '', text, flags=re.IGNORECASE)
         
         # CRITICAL: Convert escaped markdown back to proper formatting
         # The model sometimes generates literal \n instead of actual newlines
         text = text.replace('\\n', '\n')
         # Convert markdown list markers from escaped to actual
         text = re.sub(r'\\([*\-])', r'\1', text)
+        
+        # TARGETED FIX: Remove stray asterisks at the very end of response
+        # Only fix if asterisks appear after punctuation (likely unintentional)
+        text = re.sub(r'([.!?])\*{1,2}$', r'\1', text.rstrip())
+        
+        # DEFENSIVE FIX: Close unclosed italic markdown for action expressions
+        # Pattern: *word (where word looks like an action: grins, chuckles, nods, etc.)
+        # followed by text without closing * within reasonable distance
+        # This prevents "*grins and here's more text..." from making everything italic
+        action_words = r'(?:grins|chuckles|nods|smiles|laughs|winks|shrugs|thinks|pauses|sighs)'
+        # Find "*action " without a closing * within the next 10 characters
+        text = re.sub(
+            rf'\*({action_words})(\s+)(?!\*)',
+            r'*\1*\2',
+            text,
+            flags=re.IGNORECASE
+        )
         
         # Clean up extra spaces on same line (but preserve newlines for formatting)
         text = re.sub(r'[ \t]+', ' ', text)
@@ -199,27 +275,46 @@ class TogetherAIBackend(LLMBackend):
         """
         user_lower = user_input.lower()
         
-        # Trigger keywords for current information
-        current_triggers = [
-            "who is", "who's", "current", "latest", "recent", "now", "today",
-            "2024", "2025", "this year", "prime minister", "pm of", "president",
-            "new", "newest", "what happened", "news about", "search for", "search online"
+        # CRITICAL: Exclude casual greetings and small talk (should never trigger search)
+        greeting_patterns = [
+            "how's it going", "how are you", "how r u", "how's your day",
+            "how are things", "what's up", "wassup", "sup", "hey there",
+            "good morning", "good afternoon", "good evening", "hello", "hi ",
+            "how you doing", "how have you been", "how's everything"
         ]
+        
+        # Check for greetings first - these override any trigger words
+        for greeting in greeting_patterns:
+            if greeting in user_lower:
+                return False
         
         # Skip keywords (things we handle without search - about our platform/company)
         skip_triggers = [
             "what is remegrid", "what is remelife", "what is luki", "tell me about luki",
-            "$luki token", "reme token", "caps token", "what are caps",
+            "$luki token", "reme token", "caps token", "what are caps", "tell me about caps",
             "who is simon hooper", "how do i use", "what is your purpose", 
-            "tell me about yourself", "what can you do"
+            "tell me about yourself", "what can you do", "your features",
+            "help me", "i need help", "can you help", "explain"
         ]
         
-        # Check if we should skip
+        # Check if we should skip (platform/help questions)
         for skip in skip_triggers:
             if skip in user_lower:
                 return False
         
-        # Check if we should search
+        # Trigger keywords for current information (only if not greeting/platform question)
+        current_triggers = [
+            "who is the current", "who's the current", "latest news", "recent news",
+            "what happened in 2024", "what happened in 2025", "news about",
+            "this year", "prime minister", "pm of", "president of",
+            "newest", "what happened today", "search for", "search online",
+            "current events", "breaking news",
+            # Weather queries
+            "weather", "temperature", "forecast", "how hot", "how cold", "raining",
+            "sunny", "cloudy", "storm", "climate in"
+        ]
+        
+        # Check if we should search (requires stronger signals now)
         for trigger in current_triggers:
             if trigger in user_lower:
                 return True
@@ -229,11 +324,28 @@ class TogetherAIBackend(LLMBackend):
     async def generate(self, prompt: Dict[str, Any], **kwargs) -> ModelResponse:
         # Format conversation history prominently if it exists
         conversation_history = prompt.get('conversation_history', '').strip()
-        # Build base system content without retrieval_context (we'll add it later with instructions)
+        
+        # CRITICAL: Add explicit conversation state awareness
         if conversation_history:
-            system_content = f"{prompt['system_prompt']}\n\n{conversation_history}"
+            # Count messages to determine conversation depth
+            message_count = conversation_history.count('\n') + 1
+            system_content = (
+                f"## ⚠️ CONVERSATION STATE ALERT:\n"
+                f"This is an ONGOING conversation with ~{message_count} prior messages.\n"
+                f"YOU ARE IN THE MIDDLE OF A CONVERSATION - DO NOT:\n"
+                f"- Say 'Hey!', 'Hello!', 'Hi!', or any greeting\n"
+                f"- Introduce yourself or ask 'How can I help?'\n"
+                f"- Act like this is the first message\n"
+                f"INSTEAD: Continue naturally from the conversation flow below.\n\n"
+                f"{prompt['system_prompt']}\n\n{conversation_history}"
+            )
         else:
-            system_content = prompt['system_prompt']
+            # New conversation - normal greeting allowed
+            system_content = (
+                f"## CONVERSATION STATE: NEW SESSION\n"
+                f"This is the START of a new conversation. A greeting is appropriate.\n\n"
+                f"{prompt['system_prompt']}"
+            )
         
         # Debug: Log system content length and conversation status
         has_history = bool(conversation_history)
@@ -256,7 +368,7 @@ class TogetherAIBackend(LLMBackend):
                 f"{search_results_text}\n"
                 f"[END WEB SEARCH RESULTS]\n\n"
                 f"CRITICAL INSTRUCTIONS FOR WEB SEARCH:\n"
-                f"1. Set web_search_used=true in your response\n"
+                f"1. Use web search results to provide current, accurate information\n"
                 f"2. Use web search ONLY for current events, news, and real-time information\n"
                 f"3. NEVER let web search override these VERIFIED FACTS from your knowledge base:\n"
                 f"   - Simon Hooper is the Founder and CEO of ReMeLife and LUKi (NOT Dr. Jane Thomason or anyone else)\n"
@@ -275,10 +387,15 @@ class TogetherAIBackend(LLMBackend):
             system_content = (
                 f"{system_content}\n\n"
                 f"## PLATFORM KNOWLEDGE (Reference Documentation):\n"
-                f"{knowledge_context}\n"
-                f"(Use this for answering questions about ReMeLife platform, features, etc.)\n"
+                f"{knowledge_context}\n\n"
+                f"## CRITICAL KNOWLEDGE USAGE RULES:\n"
+                f"1. The above Platform Knowledge section contains THE ONLY AUTHORITATIVE information about platform features\n"
+                f"2. If the user asks about a platform feature/page/UI and it's NOT documented above, you MUST say: \"I don't have specific details on that\"\n"
+                f"3. NEVER describe UI steps, navigation paths, or features not explicitly written above\n"
+                f"4. If you see incomplete information above, admit the gap - DO NOT fill it with assumptions\n"
+                f"5. When answering platform questions, ONLY use information from the Platform Knowledge section above\n"
             )
-            print(f"📚 Platform knowledge added to context")
+            print(f"📚 Platform knowledge added to context ({len(knowledge_context)} chars)")
         
         # Include USER MEMORIES separately with anti-hallucination instructions
         retrieval_context = prompt.get('retrieval_context', '').strip()
@@ -333,27 +450,16 @@ class TogetherAIBackend(LLMBackend):
             dyn_max = 512  # Memory detection is simple, needs less tokens
             print(f"🧠 Memory detection mode: using MemoryDetectionResponse schema")
         else:
-            # Regular chat: choose schema mode (minimal for speed by default)
+            # Regular chat: Use generous 32k limit for ALL responses
+            # Query length doesn't predict response complexity
+            # Most responses use <2k tokens (fast), but complex topics can use more
+            # 32k ceiling ensures ZERO truncation while maintaining speed
             schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
             use_minimal = schema_mode == "minimal"
             
-            if use_minimal:
-                # ENHANCED: Increased tokens to prevent truncation
-                if user_len <= 120:
-                    dyn_max = 2048  # Was 1024
-                elif user_len <= 300:
-                    dyn_max = 3072  # Was 2048
-                else:
-                    dyn_max = 4096  # Was 3072
-                response_model = LUKiMinimalResponse
-            else:
-                if user_len <= 120:
-                    dyn_max = 3072  # Was 2048
-                elif user_len <= 300:
-                    dyn_max = 6144  # Was 4096
-                else:
-                    dyn_max = 8192
-                response_model = LUKiResponse
+            dyn_max = 32768  # Single generous limit - matches config.py, prevents truncation
+            response_model = LUKiMinimalResponse if use_minimal else LUKiResponse
+            print(f"💬 Using {response_model.__name__} with max_tokens={dyn_max}")
 
         # Build parameters with our settings taking absolute precedence
         final_params = {
@@ -454,6 +560,10 @@ class TogetherAIBackend(LLMBackend):
             # Handle different response types
             metadata: Dict[str, Any] = {}
             
+            # Track web search usage in metadata (not in user-facing text)
+            if web_search_used:
+                metadata['web_search_used'] = True
+            
             if is_memory_detection:
                 # Memory detection returns JSON structure, not final_response
                 content = luki_response.model_dump_json()
@@ -462,6 +572,13 @@ class TogetherAIBackend(LLMBackend):
             else:
                 # Regular chat responses
                 content = getattr(luki_response, "final_response", "")
+                
+                # Extract web_search_used from structured response if present
+                if hasattr(luki_response, "web_search_used"):
+                    response_web_search = getattr(luki_response, "web_search_used", False)
+                    if response_web_search:
+                        metadata['web_search_used'] = True
+                
                 if hasattr(luki_response, "thought") and getattr(luki_response, "thought") is not None:
                     try:
                         metadata["thought_process"] = luki_response.thought.model_dump()
@@ -473,15 +590,27 @@ class TogetherAIBackend(LLMBackend):
             try:
                 autocontinue_enabled = os.getenv("LUKI_AUTOCONTINUE", "true").lower() == "true"
                 if autocontinue_enabled:
-                    # Heuristic: high utilization vs dyn_max and no terminal punctuation
+                    # Heuristic: detect truncation including incomplete markdown
                     def looks_truncated(txt: str) -> bool:
                         trimmed = (txt or "").rstrip()
                         if not trimmed:
                             return False
+                        
+                        # Check for incomplete markdown formatting (unclosed * or _)
+                        # Count asterisks and underscores - should be even if complete
+                        asterisk_count = trimmed.count('*')
+                        underscore_count = trimmed.count('_')
+                        
+                        # If odd number of * or _, likely incomplete markdown
+                        if asterisk_count % 2 != 0 or underscore_count % 2 != 0:
+                            return True
+                        
+                        # Original terminal punctuation check
                         terminal = (".", "!", "?", "\u201d", '"', "'", ")", "]")
                         if trimmed.endswith(terminal):
                             return False
-                        # Approx token estimate
+                        
+                        # Approx token estimate for very long responses
                         est_tokens = max(1, len(trimmed) // 4)
                         return est_tokens >= int(dyn_max * 0.9)
 
@@ -506,8 +635,8 @@ class TogetherAIBackend(LLMBackend):
                             {"role": "assistant", "content": tail},
                             {"role": "user", "content": "Please continue where you left off. Avoid repetition."}
                         ]
-                        # Token budget for continuation
-                        cont_tokens = 768 if user_len <= 200 else 1024
+                        # Token budget for continuation - MASSIVELY INCREASED to ensure completion
+                        cont_tokens = 8192  # Allow full continuation regardless of input length
                         # Try candidates
                         cont_candidates = []
                         if self.fallback_model:
@@ -575,37 +704,43 @@ class TogetherAIBackend(LLMBackend):
                 except Exception:
                     minimal_core = (
                         "You are LUKi, the ReMeLife assistant. Follow platform facts accurately. "
-                        "If unsure, say you don't know."
+                        "If unsure, say you don't know. NEVER fabricate platform features or UX instructions."
                     )
                 try:
                     persona_core = prompt_registry.load_prompt("persona_luki", "v1")
                 except Exception:
                     persona_core = ""
                 rc = prompt.get('retrieval_context') or ""
+                kc = prompt.get('knowledge_context') or ""
                 if len(rc) > 600:
                     rc = rc[:600] + "..."
                 conv = prompt.get('conversation_history') or ""
                 if len(conv) > 400:
                     conv = conv[:400] + "..."
-                fallback_system = (
-                    f"{minimal_core}\n\n"
-                    f"{persona_core}\n\n"
-                    f"Relevant Context:\n{rc}\n\n"
-                    f"Recent Conversation:\n{conv}\n\n"
-                    "Instructions: Reply succinctly in natural language in LUKi's voice with gentle action cues like *smiles* or *chuckles* when appropriate. "
+                
+                # Build system with knowledge context if available
+                fallback_system = f"{minimal_core}\n\n{persona_core}"
+                if kc:
+                    fallback_system += f"\n\nPlatform Knowledge:\n{kc}\n\nCRITICAL: Only describe features explicitly documented above. NEVER invent UI steps or navigation."
+                if rc:
+                    fallback_system += f"\n\nRelevant Context:\n{rc}"
+                if conv:
+                    fallback_system += f"\n\nRecent Conversation:\n{conv}"
+                fallback_system += (
+                    "\n\nInstructions: Reply succinctly in natural language in LUKi's voice with gentle action cues like *smiles* or *chuckles* when appropriate. "
                     "Do not include JSON or internal thoughts."
                 )
                 fallback_messages = [
                     {"role": "system", "content": fallback_system},
                     {"role": "user", "content": prompt['user_input']}
                 ]
-                # Increase fallback tokens for non-trivial inputs to reduce truncation
+                # MASSIVELY INCREASED fallback tokens to prevent truncation
                 if user_len <= 60:
-                    fb_tokens = min(self.fast_fallback_tokens, 768)
+                    fb_tokens = 4096  # Short questions can have long answers
                 elif user_len <= 200:
-                    fb_tokens = min(max(self.fast_fallback_tokens, 768), 1536)
+                    fb_tokens = 8192  # Medium questions need space
                 else:
-                    fb_tokens = min(max(self.fast_fallback_tokens, 1024), 2048)
+                    fb_tokens = 12288  # Long/complex questions need maximum space
                 raw_last_error: Optional[Exception] = None
                 for raw_model in candidates:
                     try:
@@ -700,25 +835,13 @@ class TogetherAIBackend(LLMBackend):
             {"role": "user", "content": prompt['user_input']}
         ]
         # Build parameters with our settings taking absolute precedence
+        # Streaming: Use same 32k generous limit as non-streaming
         schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
         use_minimal = schema_mode == "minimal"
-        user_len = len(prompt['user_input'].strip())
-        if use_minimal:
-            if user_len <= 80:
-                dyn_max = 512
-            elif user_len <= 200:
-                dyn_max = 1024
-            else:
-                dyn_max = 1536
-            stream_model = LUKiMinimalResponse
-        else:
-            if user_len <= 120:
-                dyn_max = 2048
-            elif user_len <= 300:
-                dyn_max = 4096
-            else:
-                dyn_max = 8192
-            stream_model = LUKiResponse
+        
+        dyn_max = 32768  # Single generous limit - prevents truncation
+        stream_model = LUKiMinimalResponse if use_minimal else LUKiResponse
+        print(f"📡 Streaming with {stream_model.__name__} and max_tokens={dyn_max}")
 
         final_params = {
             "model": self.model_name,
@@ -754,23 +877,31 @@ class TogetherAIBackend(LLMBackend):
                     minimal_core = prompt_registry.load_prompt("system_core_text", "v1")
                 except Exception:
                     minimal_core = (
-                        "You are LUKi, the ReMeLife assistant. Follow platform facts accurately."
+                        "You are LUKi, the ReMeLife assistant. Follow platform facts accurately. "
+                        "NEVER fabricate platform features or UX instructions."
                     )
                 try:
                     persona_core = prompt_registry.load_prompt("persona_luki", "v1")
                 except Exception:
                     persona_core = ""
                 rc = prompt.get('retrieval_context') or ""
+                kc = prompt.get('knowledge_context') or ""
                 if len(rc) > 600:
                     rc = rc[:600] + "..."
                 conv = prompt.get('conversation_history') or ""
                 if len(conv) > 400:
                     conv = conv[:400] + "..."
-                fb_system = (
-                    f"{minimal_core}\n\n{persona_core}\n\n"
-                    f"Relevant Context:\n{rc}\n\n"
-                    f"Recent Conversation:\n{conv}\n\n"
-                    "Instructions: Reply succinctly in LUKi's voice with gentle action cues like *smiles* or *chuckles* when appropriate. "
+                
+                # Build system with knowledge context if available
+                fb_system = f"{minimal_core}\n\n{persona_core}"
+                if kc:
+                    fb_system += f"\n\nPlatform Knowledge:\n{kc}\n\nCRITICAL: Only describe features explicitly documented above. NEVER invent UI steps or navigation."
+                if rc:
+                    fb_system += f"\n\nRelevant Context:\n{rc}"
+                if conv:
+                    fb_system += f"\n\nRecent Conversation:\n{conv}"
+                fb_system += (
+                    "\n\nInstructions: Reply succinctly in LUKi's voice with gentle action cues like *smiles* or *chuckles* when appropriate. "
                     "Do not include JSON or internal thoughts."
                 )
                 fb_messages = [
