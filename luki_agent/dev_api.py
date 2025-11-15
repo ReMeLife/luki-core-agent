@@ -331,7 +331,8 @@ async def chat_stream(request: ChatRequest):
                 user_input=request.message,
                 user_id=request.user_id,
                 conversation_history=request.context.get("conversation_history", []) if request.context else [],
-                memory_context=(proj_docs or []) + (user_memories or [])
+                memory_context=user_memories,
+                knowledge_context=proj_docs
             )
 
             async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
