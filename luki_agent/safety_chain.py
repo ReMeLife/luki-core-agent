@@ -9,6 +9,7 @@ import re
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime
 
 from .config import settings
 
@@ -40,6 +41,15 @@ class SafetyChain:
             "enable_safety_filter": getattr(settings, "enable_safety_filters", True),
             "enable_pii_redaction": getattr(settings, "enable_pii_redaction", True),
             "enable_consent_checking": getattr(settings, "enable_consent_checking", True)
+        }
+        
+        self._metrics = {
+            "filters_applied": 0,
+            "pii_redactions": 0,
+            "consent_checks": 0,
+            "input_violations": 0,
+            "output_violations": 0,
+            "last_updated": None,
         }
         
         # PII patterns for redaction
@@ -96,11 +106,18 @@ class SafetyChain:
         
         # If violations found, filter the input
         if violations:
+            self._metrics["filters_applied"] += 1
+            self._metrics["input_violations"] += 1
+            self._metrics["last_updated"] = datetime.utcnow().isoformat()
             return self._create_filtered_input_message(violations), True
         
         # Apply PII redaction if enabled
         if self.config.get("enable_pii_redaction", True):
-            content, _ = self._redact_pii(content)
+            content, pii_redacted = self._redact_pii(content)
+            if pii_redacted:
+                self._metrics["pii_redactions"] += 1
+                self._metrics["filters_applied"] += 1
+                self._metrics["last_updated"] = datetime.utcnow().isoformat()
         
         return content, False
     
@@ -142,11 +159,18 @@ class SafetyChain:
             content, pii_redacted = self._redact_pii(content)
             if pii_redacted:
                 was_filtered = True
+                self._metrics["pii_redactions"] += 1
         
         # If violations found, replace with safe response
         if violations:
             content = self._create_safe_response(violations)
             was_filtered = True
+            self._metrics["filters_applied"] += 1
+            self._metrics["output_violations"] += 1
+        
+        if was_filtered:
+            self._metrics["filters_applied"] += 1
+            self._metrics["last_updated"] = datetime.utcnow().isoformat()
         
         return content, was_filtered
     
@@ -214,7 +238,10 @@ class SafetyChain:
         # TODO: Implement actual consent checking with memory service
         # For now, assume consent is granted for basic conversation
         allowed_types = ["conversation", "memory_retrieval", "activity_suggestion"]
-        return data_type in allowed_types
+        result = data_type in allowed_types
+        self._metrics["consent_checks"] += 1
+        self._metrics["last_updated"] = datetime.utcnow().isoformat()
+        return result
     
     def validate_memory_access(self, user_id: str, memory_content: Dict[str, Any]) -> bool:
         """
@@ -255,9 +282,6 @@ class SafetyChain:
     def get_safety_metrics(self) -> Dict[str, Any]:
         """Get safety filtering metrics"""
         # TODO: Implement actual metrics tracking
-        return {
-            "filters_applied": 0,
-            "pii_redactions": 0,
-            "consent_checks": 0,
-            "safety_level": "standard"
-        }
+        metrics = dict(self._metrics)
+        metrics.setdefault("safety_level", "standard")
+        return metrics
