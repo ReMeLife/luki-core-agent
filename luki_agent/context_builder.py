@@ -274,7 +274,8 @@ class ContextBuilder:
             "knowledge_context": context_slots.get('knowledge_context', ''),  # Platform knowledge
             "conversation_history": context_slots.get('conversation_context', ''),
             "user_input": user_input,  # Pass the raw user input separately
-            "user_id": user_id  # Include user_id for function calling decisions
+            "user_id": user_id,  # Include user_id for function calling decisions
+            "raw_conversation_history": conversation_history or []
         }
 
         # Calculate final token count based on a representative string version

@@ -93,7 +93,8 @@ class TogetherAIBackend(LLMBackend):
     async def _check_and_execute_web_search(
         self,
         messages: list[Dict[str, str]],
-        user_input: str
+        user_input: str,
+        trace: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Check if user's question needs web search and execute if needed.
@@ -118,13 +119,26 @@ class TogetherAIBackend(LLMBackend):
             if not needs_search:
                 return None
         
+        # Prepare optional trace entry for structured metadata
+        trace_entry: Optional[Dict[str, Any]] = None
+        if trace is not None:
+            trace_entry = {
+                "used": False,
+                "query": None,
+                "answer": "",
+                "sources": [],
+                "search_depth": None,
+                "error": None,
+            }
         try:
             print("🔍 Web search triggered - analyzing query...")
             
             # Generate search query using simple keyword extraction
-            # Fallback to original question if generation fails
+            # Fallback to original question if extraction fails
             search_query = self._generate_search_query(user_input)
             print(f"🔍 Search query generated: {search_query}")
+            if trace_entry is not None:
+                trace_entry["query"] = search_query
             
             # Execute search
             search_results = self.web_search_tool.search(search_query, max_results=3)
@@ -132,13 +146,36 @@ class TogetherAIBackend(LLMBackend):
             if search_results.get("success"):
                 formatted_results = self.web_search_tool.format_results_for_llm(search_results)
                 print(f"✅ Search completed: {len(search_results.get('results', []))} results")
+                if trace_entry is not None:
+                    trace_entry["used"] = True
+                    trace_entry["answer"] = search_results.get("answer", "")
+                    trace_entry["search_depth"] = search_results.get("search_depth")
+                    # Capture up to 3 top sources with title + URL
+                    top_results = search_results.get("results", [])[:3]
+                    trace_entry["sources"] = [
+                        {
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                        }
+                        for r in top_results
+                    ]
+                if trace is not None and trace_entry is not None:
+                    trace["web_search"] = trace_entry
                 return formatted_results
             else:
                 print(f"⚠️  Search failed: {search_results.get('error')}")
+                if trace_entry is not None:
+                    trace_entry["error"] = search_results.get("error") or "unknown_error"
+                if trace is not None and trace_entry is not None:
+                    trace["web_search"] = trace_entry
                 return None
                 
         except Exception as e:
             print(f"❌ Web search error: {e}")
+            if trace_entry is not None:
+                trace_entry["error"] = str(e)
+            if trace is not None and trace_entry is not None:
+                trace["web_search"] = trace_entry
             return None
     
     def _detect_location_followup(self, messages: list[Dict[str, str]], user_input: str) -> bool:
@@ -352,9 +389,12 @@ class TogetherAIBackend(LLMBackend):
         print(f"🔍 System content length: {len(system_content)} chars | Has conversation history: {has_history}")
         
         # Check if web search is needed and execute
+        # Use raw_conversation_history so follow-up detection can see the last assistant message
+        search_trace: Dict[str, Any] = {}
         search_results_text = await self._check_and_execute_web_search(
-            [],  # We don't need messages for heuristic check
-            prompt['user_input']
+            prompt.get("raw_conversation_history", []) or [],
+            prompt['user_input'],
+            trace=search_trace,
         )
         
         # Track if web search was used (for UI indicator)
@@ -563,6 +603,18 @@ class TogetherAIBackend(LLMBackend):
             # Track web search usage in metadata (not in user-facing text)
             if web_search_used:
                 metadata['web_search_used'] = True
+
+            # Attach structured web search trace if available
+            ws_trace = search_trace.get("web_search") if 'search_trace' in locals() else None
+            if ws_trace:
+                metadata["web_search"] = ws_trace
+                tools_meta = metadata.setdefault("tools", [])
+                tools_meta.append({
+                    "name": "web_search",
+                    "successful": bool(ws_trace.get("used")) and not ws_trace.get("error"),
+                    "error": ws_trace.get("error"),
+                    "sources": ws_trace.get("sources") or [],
+                })
             
             if is_memory_detection:
                 # Memory detection returns JSON structure, not final_response
