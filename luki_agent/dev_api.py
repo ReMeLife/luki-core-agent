@@ -23,6 +23,7 @@ try:
     from .context_builder import ContextBuilder
     from .memory.memory_service_client import MemoryServiceClient
     from .project_kb import ProjectKB
+    from .safety_chain import SafetyChain
     logger.info("✅ All core imports successful")
 except ImportError as e:
     logger.error(f"❌ CRITICAL IMPORT ERROR: {e}")
@@ -140,6 +141,14 @@ async def on_startup():
         # Do not raise, allow lazy init per-request as fallback
         app.state.llm_manager = None
 
+    try:
+        logger.info("🔧 Initializing global SafetyChain on startup...")
+        app.state.safety_chain = SafetyChain()
+        logger.info("✅ SafetyChain ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize SafetyChain on startup: {e}")
+        app.state.safety_chain = None
+
     # Bootstrap prompts directory if needed
     _bootstrap_prompts_dir()
 
@@ -218,9 +227,22 @@ async def chat(request: ChatRequest):
         logger.info(f"🔍 Step 2: Initializing Context Builder...")
         context_builder = ContextBuilder()
         logger.info(f"✅ Step 2: Context Builder initialized")
+        safety_chain = getattr(app.state, "safety_chain", None)
+        if safety_chain is None:
+            try:
+                safety_chain = SafetyChain()
+                app.state.safety_chain = safety_chain
+            except Exception as e:
+                logger.warning(f"SafetyChain initialization failed: {e}")
+                safety_chain = None
         
         # Prepare user memories (ELR) if gateway provided them (only for authenticated users)
         user_memories = request.context.get("memory_context", []) if request.context else []
+        if safety_chain is not None:
+            try:
+                await safety_chain.filter_input(request.message, request.user_id)
+            except Exception as e:
+                logger.warning(f"Safety input filter failed: {e}")
 
         # ProjectKB search (independent of ELR, available to all users)
         proj_docs: List[Dict[str, Any]] = []
@@ -277,10 +299,21 @@ async def chat(request: ChatRequest):
 
         logger.info(f"🔍 Step 4: Generating LLM response...")
         response = await llm_manager.generate(prompt=context_result["final_prompt"])
+        if safety_chain is not None:
+            try:
+                await safety_chain.filter_output(response.content, request.user_id)
+            except Exception as e:
+                logger.warning(f"Safety output filter failed: {e}")
         logger.info(f"✅ Step 4: LLM response generated successfully")
         # Always include a session_id for gateway compatibility
         session_id = request.session_id or "new-session"
-        payload = {"response": response.content, "metadata": response.metadata, "session_id": session_id}
+        metadata = response.metadata or {}
+        if safety_chain is not None:
+            try:
+                metadata["safety_metrics"] = safety_chain.get_safety_metrics()
+            except Exception as e:
+                logger.warning(f"Failed to get safety metrics: {e}")
+        payload = {"response": response.content, "metadata": metadata, "session_id": session_id}
         logger.info(f"🚀 Returning response to gateway | chars={len(response.content)}")
         return payload
 
