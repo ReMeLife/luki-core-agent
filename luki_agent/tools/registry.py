@@ -622,16 +622,70 @@ class GenerateWellbeingReportTool(BaseTool):
     async def execute(self, user_id: str, report_type: str = "weekly", **kwargs) -> ToolResult:
         """Generate wellbeing report"""
         try:
-            result = await self.reporting_client.generate_report(
+            # Map report_type to a simple day window, with optional override via kwargs
+            days = kwargs.get("days")
+            if days is None:
+                if report_type == "weekly":
+                    days = 7
+                elif report_type in ("fortnight", "biweekly"):
+                    days = 14
+                elif report_type == "monthly":
+                    days = 30
+                else:
+                    days = 7
+
+            result = await self.reporting_client.generate_wellbeing_report(
                 user_id=user_id,
-                report_data={"type": report_type}
+                days=days,
             )
-            
-            if result.get("success", False):
+
+            # HTTP client from ModuleClient returns {"status": "success", "report": {...}}
+            if result.get("status") == "success":
                 report = result.get("report", {})
+                wm = report.get("wellbeing_metrics", {})
+
+                period = report.get("period", {})
+                start = period.get("start_date")
+                end = period.get("end_date")
+
                 content = f"📊 **Your {report_type.title()} Wellbeing Report**\n\n"
-                content += report.get("summary", "Report generated successfully.")
-                return ToolResult(success=True, content=content)
+                if start and end:
+                    content += f"Period: {start} → {end}\n\n"
+
+                avg_mood = wm.get("avg_mood_score")
+                avg_acts = wm.get("avg_daily_activities")
+                avg_eng = wm.get("avg_engagement_score")
+                total_social = wm.get("total_social_interactions")
+
+                if any(v is not None for v in [avg_mood, avg_acts, avg_eng, total_social]):
+                    content += "**Key metrics:**\n"
+                    if avg_mood is not None:
+                        content += f"- Average mood score: {avg_mood:.2f}\n"
+                    if avg_acts is not None:
+                        content += f"- Average daily activities: {avg_acts:.1f}\n"
+                    if avg_eng is not None:
+                        content += f"- Average engagement score: {avg_eng:.2f}\n"
+                    if total_social is not None:
+                        content += f"- Total social interactions: {int(total_social)}\n"
+                    content += "\n"
+
+                insights = wm.get("key_insights") or []
+                if insights:
+                    content += "**Key insights:**\n"
+                    for insight in insights[:5]:
+                        content += f"- {insight}\n"
+                    content += "\n"
+
+                recs = wm.get("recommendations") or []
+                if recs:
+                    content += "**Recommendations:**\n"
+                    for rec in recs[:5]:
+                        content += f"- {rec}\n"
+
+                if not insights and not recs:
+                    content += "Report generated successfully, but no specific insights or recommendations were available."
+
+                return ToolResult(success=True, content=content, metadata=report)
             else:
                 return ToolResult(success=False, content="Unable to generate your wellbeing report at this time.")
         except Exception as e:
@@ -655,18 +709,47 @@ class GetAnalyticsSummaryTool(BaseTool):
     async def execute(self, user_id: str, period: str = "week", **kwargs) -> ToolResult:
         """Get analytics summary"""
         try:
-            result = await self.reporting_client.get_analytics(
-                user_id=user_id,
-                analytics_data={"period": period}
-            )
-            
-            if result.get("success", False):
-                analytics = result.get("analytics", {})
-                content = f"📈 **Your {period.title()} Analytics Summary**\n\n"
-                content += analytics.get("summary", "Analytics data retrieved successfully.")
-                return ToolResult(success=True, content=content)
+            # Use reporting service trends endpoint via ModuleClient
+            result = await self.reporting_client.get_user_trends(user_id=user_id)
+
+            trends_container = result.get("trends", {})
+            analysis_days = trends_container.get("analysis_period_days")
+            trend_map = trends_container.get("trends", {})
+            forecast = trends_container.get("forecast", {})
+
+            if not trend_map:
+                return ToolResult(
+                    success=True,
+                    content="No sufficient data is available yet to compute your trends.",
+                    metadata=result,
+                )
+
+            # Build a readable summary
+            if analysis_days:
+                content = f"📈 **Your last {analysis_days}-day trends**\n\n"
             else:
-                return ToolResult(success=False, content="Unable to retrieve your analytics summary at this time.")
+                content = f"📈 **Your {period.title()} trends summary**\n\n"
+
+            for metric, t in trend_map.items():
+                direction = t.get("trend_direction", "stable")
+                confidence = t.get("confidence", "low")
+                description = t.get("description", "")
+                content += f"**{metric.title()}**: {direction} ({confidence} confidence)\n"
+                if description:
+                    content += f"  - {description}\n"
+                content += "\n"
+
+            if forecast and not forecast.get("error"):
+                fa = forecast.get("forecasted_daily_activities")
+                fe = forecast.get("forecasted_engagement_score")
+                if fa is not None or fe is not None:
+                    content += "**Simple forecast for next week:**\n"
+                    if fa is not None:
+                        content += f"- Expected daily activities: {fa:.1f}\n"
+                    if fe is not None:
+                        content += f"- Expected engagement score: {fe:.2f}\n"
+
+            return ToolResult(success=True, content=content, metadata=result)
         except Exception as e:
             return ToolResult(success=False, content=f"Error retrieving analytics: {str(e)}")
 
