@@ -65,6 +65,18 @@ class ModuleClient:
         except Exception as e:
             logger.error(f"Failed to get recommendations: {e}")
             return {"status": "error", "message": str(e)}
+
+    async def get_world_day_activities(self, user_id: str) -> Dict[str, Any]:
+        """Get today's world day activities (ReMeMades) from cognitive module"""
+        try:
+            response = await self.client.get(
+                f"{self.cognitive_url}/world-day-activities/{user_id}"
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get world day activities: {e}")
+            return {"status": "error", "message": str(e)}
     
     async def analyze_patterns(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze user patterns with cognitive module"""
@@ -83,9 +95,22 @@ class ModuleClient:
     async def track_interaction(self, user_id: str, interaction_data: Dict[str, Any]) -> Dict[str, Any]:
         """Track user interaction with engagement module"""
         try:
+            # Infer a high-level interaction_type for the engagement service
+            interaction_type = (
+                interaction_data.get("interaction_type")
+                or interaction_data.get("request_type")
+                or "interaction"
+            )
+
+            payload = {
+                "user_id": user_id,
+                "interaction_type": interaction_type,
+                "content": interaction_data,
+            }
+
             response = await self.client.post(
-                f"{self.engagement_url}/interactions/{user_id}",
-                json=interaction_data
+                f"{self.engagement_url}/interactions",
+                json=payload,
             )
             response.raise_for_status()
             return response.json()

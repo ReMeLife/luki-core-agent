@@ -460,44 +460,49 @@ class WorldDayActivitiesTool(BaseTool):
     async def execute(self, user_id: str, **kwargs) -> ToolResult:
         """Get world day activities"""
         try:
-            result = await self.cognitive_tools.get_recommendations(
-                user_id=user_id,
-                context={"activity_type": "world_day"}
-            )
-            
+            # Use the dedicated world-day activities endpoint on the cognitive service
+            result = await self.cognitive_tools.get_world_day_activities(user_id)
+
             if result.get("success", False):
-                activities = result.get("activities", [])
-                world_day = result.get("world_day", "")
-                
+                activities = result.get("world_day_activities", [])
+                date_str = result.get("date")
+
                 if activities:
-                    content = f"🌍 **Today is {world_day}!**\n\n"
+                    theme = activities[0].get("world_day_theme") or "today"
+                    content = "🌍 **Today's special world-day activities**\n\n"
+                    if date_str:
+                        content += f"Date: {date_str}\n\n"
+                    content += f"Theme: {theme}\n\n"
                     content += "Here are some special activities to celebrate:\n\n"
-                    
+
                     for i, activity in enumerate(activities, 1):
                         content += f"{i}. **{activity.get('title', 'Activity')}**\n"
                         content += f"   {activity.get('description', '')}\n\n"
-                    
+
                     content += "These activities are specially chosen to connect with today's celebration!"
                 else:
-                    content = "Today doesn't have a specific world day theme, but I can still recommend great activities for you!"
-                
+                    content = (
+                        "Today doesn't have a specific world day theme in the catalog, "
+                        "but I can still recommend great activities for you!"
+                    )
+
                 return ToolResult(
                     success=True,
                     content=content,
-                    metadata=result
+                    metadata=result,
                 )
             else:
                 return ToolResult(
                     success=False,
                     content="I couldn't retrieve today's world day activities.",
-                    error=result.get("error", "Unknown error")
+                    error=result.get("error", result.get("message", "Unknown error")),
                 )
-                
+
         except Exception as e:
             return ToolResult(
                 success=False,
                 content="I'm having trouble accessing world day activities right now.",
-                error=f"World day activities failed: {str(e)}"
+                error=f"World day activities failed: {str(e)}",
             )
 
 
@@ -526,6 +531,7 @@ class ActivityEngagementTool(BaseTool):
             result = await self.cognitive_tools.track_interaction(
                 user_id=user_id,
                 interaction_data={
+                    "interaction_type": "activity_engagement",
                     "activity_id": activity_id,
                     "engagement_score": engagement_score,
                     "duration_minutes": duration_minutes,
