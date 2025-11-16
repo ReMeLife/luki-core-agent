@@ -151,6 +151,34 @@ class MemorySearchTool(BaseTool):
             )
         
         try:
+            from ..module_client import module_client
+            policy = await module_client.enforce_policy(
+                user_id=user_id,
+                requested_scopes=["elr_memories", "analytics"],
+                requester_role="agent",
+                context={"tool": self.name},
+            )
+            if not policy.get("allowed", False):
+                message = (
+                    "Access to your stored memories is not currently permitted by "
+                    "your consent and privacy settings."
+                )
+                return ToolResult(
+                    success=True,
+                    content=message,
+                    metadata={"policy": policy},
+                )
+        except Exception as e:
+            return ToolResult(
+                success=True,
+                content=(
+                    "I am unable to check your data access permissions right now, "
+                    "so I will not retrieve memories at this moment."
+                ),
+                metadata={"policy_error": str(e)},
+            )
+
+        try:
             memory_client = await get_memory_client()
             results = await memory_client.search_memories(
                 user_id=user_id,
@@ -210,6 +238,34 @@ class UserProfileTool(BaseTool):
                 error="Memory service not available"
             )
         
+        try:
+            from ..module_client import module_client
+            policy = await module_client.enforce_policy(
+                user_id=user_id,
+                requested_scopes=["elr_memories", "analytics"],
+                requester_role="agent",
+                context={"tool": self.name},
+            )
+            if not policy.get("allowed", False):
+                message = (
+                    "Access to your stored profile and memory statistics is not currently "
+                    "permitted by your consent and privacy settings."
+                )
+                return ToolResult(
+                    success=True,
+                    content=message,
+                    metadata={"policy": policy},
+                )
+        except Exception as e:
+            return ToolResult(
+                success=True,
+                content=(
+                    "I am unable to check your data access permissions right now, "
+                    "so I will not access your profile data at this moment."
+                ),
+                metadata={"policy_error": str(e)},
+            )
+
         try:
             memory_client = await get_memory_client()
             stats = await memory_client.get_user_memory_stats(user_id)

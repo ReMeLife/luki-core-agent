@@ -152,6 +152,59 @@ class ModuleClient:
             logger.error(f"Failed to update privacy settings: {e}")
             return {"status": "error", "message": str(e)}
     
+    async def enforce_policy(
+        self,
+        user_id: str,
+        requested_scopes: List[str],
+        requester_role: str = "agent",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "user_id": user_id,
+            "requester_role": requester_role,
+            "requested_scopes": requested_scopes,
+        }
+        if context:
+            payload["context"] = context
+
+        try:
+            response = await self.client.post(
+                f"{self.security_url}/policy/enforce",
+                json=payload,
+            )
+            try:
+                raw = response.json()
+            except ValueError:
+                raw = {"detail": response.text}
+
+            data: Dict[str, Any]
+            if isinstance(raw, dict):
+                data = raw
+            else:
+                data = {"detail": raw}
+
+            if response.status_code == 200:
+                return {
+                    "allowed": bool(data.get("allowed", True)),
+                    "scopes_checked": data.get("scopes_checked", []),
+                    "reason": data.get("reason", "consent_valid"),
+                    "detail": data.get("detail"),
+                }
+
+            return {
+                "allowed": False,
+                "error": data.get("error", "policy_denied"),
+                "detail": data.get("detail"),
+                "status_code": response.status_code,
+            }
+        except Exception as e:
+            logger.error(f"Policy enforcement request failed: {e}")
+            return {
+                "allowed": False,
+                "error": "policy_request_failed",
+                "detail": str(e),
+            }
+    
     # Reporting Module Methods
     async def generate_wellbeing_report(self, user_id: str, days: int = 7) -> Dict[str, Any]:
         """Generate wellbeing report for user"""
