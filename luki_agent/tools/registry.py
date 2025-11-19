@@ -5,7 +5,7 @@ Manages available tools and their execution for the agent.
 Tools include memory retrieval, activity recommendations, and basic utilities.
 """
 
-from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING, Awaitable, cast
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import asyncio
@@ -628,6 +628,41 @@ class GenerateWellbeingReportTool(BaseTool):
     async def execute(self, user_id: str, report_type: str = "weekly", **kwargs) -> ToolResult:
         """Generate wellbeing report"""
         try:
+            # Perform consent/policy enforcement for analytics before generating the report
+            policy_result = None
+            enforce_policy = getattr(self.reporting_client, "enforce_policy", None)
+            if callable(enforce_policy):
+                try:
+                    policy_result = await cast(
+                        Awaitable[Dict[str, Any]],
+                        enforce_policy(
+                            user_id=user_id,
+                            requested_scopes=["analytics"],
+                            requester_role="agent",
+                            context={
+                                "tool": "generate_wellbeing_report",
+                                "report_type": report_type,
+                            },
+                        ),
+                    )
+                except Exception as e:
+                    policy_result = {
+                        "allowed": False,
+                        "error": "policy_request_failed",
+                        "detail": str(e),
+                    }
+
+            if policy_result is not None and not policy_result.get("allowed", True):
+                message = (
+                    "I'm not currently allowed to use your data to generate a wellbeing report. "
+                    "You can review your privacy and analytics settings if you'd like to enable this."
+                )
+                return ToolResult(
+                    success=True,
+                    content=message,
+                    metadata={"policy": policy_result},
+                )
+
             # Map report_type to a simple day window, with optional override via kwargs
             days = kwargs.get("days")
             if days is None:
@@ -715,6 +750,41 @@ class GetAnalyticsSummaryTool(BaseTool):
     async def execute(self, user_id: str, period: str = "week", **kwargs) -> ToolResult:
         """Get analytics summary"""
         try:
+            # Perform consent/policy enforcement for analytics before retrieving trends
+            policy_result = None
+            enforce_policy = getattr(self.reporting_client, "enforce_policy", None)
+            if callable(enforce_policy):
+                try:
+                    policy_result = await cast(
+                        Awaitable[Dict[str, Any]],
+                        enforce_policy(
+                            user_id=user_id,
+                            requested_scopes=["analytics"],
+                            requester_role="agent",
+                            context={
+                                "tool": "get_analytics_summary",
+                                "period": period,
+                            },
+                        ),
+                    )
+                except Exception as e:
+                    policy_result = {
+                        "allowed": False,
+                        "error": "policy_request_failed",
+                        "detail": str(e),
+                    }
+
+            if policy_result is not None and not policy_result.get("allowed", True):
+                message = (
+                    "I'm not currently allowed to use your data to generate an analytics summary. "
+                    "You can review your privacy and analytics settings if you'd like to enable this."
+                )
+                return ToolResult(
+                    success=True,
+                    content=message,
+                    metadata={"policy": policy_result},
+                )
+
             # Use reporting service trends endpoint via ModuleClient
             result = await self.reporting_client.get_user_trends(user_id=user_id)
 
