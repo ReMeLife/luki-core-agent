@@ -238,6 +238,7 @@ async def chat(request: ChatRequest):
         
         # Prepare user memories (ELR) if gateway provided them (only for authenticated users)
         user_memories = request.context.get("memory_context", []) if request.context else []
+        wallet_context = request.context.get("wallet") if request.context else None
         if safety_chain is not None:
             try:
                 await safety_chain.filter_input(request.message, request.user_id)
@@ -309,7 +310,8 @@ async def chat(request: ChatRequest):
             user_id=request.user_id,
             conversation_history=request.context.get("conversation_history", []) if request.context else [],
             memory_context=user_memories,  # ONLY user memories here
-            knowledge_context=proj_docs     # Project knowledge separate
+            knowledge_context=proj_docs,    # Project knowledge separate
+            wallet_context=wallet_context,
         )
         logger.info(f"✅ Step 3: Context built successfully")
         
@@ -353,6 +355,7 @@ async def chat_stream(request: ChatRequest):
             context_builder = ContextBuilder()
             # ELR user memories provided by gateway (authenticated users only)
             user_memories = request.context.get("memory_context", []) if request.context else []
+            wallet_context = request.context.get("wallet") if request.context else None
             safety_chain = getattr(app.state, "safety_chain", None)
             if safety_chain is not None and user_memories:
                 try:
@@ -407,7 +410,8 @@ async def chat_stream(request: ChatRequest):
                 user_id=request.user_id,
                 conversation_history=request.context.get("conversation_history", []) if request.context else [],
                 memory_context=user_memories,
-                knowledge_context=proj_docs
+                knowledge_context=proj_docs,
+                wallet_context=wallet_context,
             )
 
             async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
