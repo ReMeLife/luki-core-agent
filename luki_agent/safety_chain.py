@@ -5,6 +5,7 @@ Implements safety filtering, PII redaction, and consent enforcement
 to ensure responsible AI behavior and data protection.
 """
 
+import logging
 import re
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from enum import Enum
 from datetime import datetime
 
 from .config import settings
+from .module_client import module_client
 
 
 class SafetyLevel(Enum):
@@ -221,7 +223,7 @@ class SafetyChain:
         else:
             return "I want to be helpful while staying within appropriate boundaries. Let me know if there's another way I can assist you."
     
-    async def check_consent(self, user_id: str, data_type: str) -> bool:
+    async def check_consent(self, user_id: str, data_type: str, context: Optional[Dict[str, Any]] = None) -> bool:
         """
         Check if user has given consent for specific data usage
         
@@ -234,14 +236,57 @@ class SafetyChain:
         """
         if not self.config.get("enable_consent_checking", True):
             return True
-        
-        # TODO: Implement actual consent checking with memory service
-        # For now, assume consent is granted for basic conversation
-        allowed_types = ["conversation", "memory_retrieval", "activity_suggestion"]
-        result = data_type in allowed_types
+
         self._metrics["consent_checks"] += 1
         self._metrics["last_updated"] = datetime.utcnow().isoformat()
-        return result
+
+        scope_map: Dict[str, List[str]] = {
+            "conversation": [],
+            "memory_retrieval": ["elr_memories"],
+            "elr_memories": ["elr_memories"],
+            "elr_basic": ["elr_basic"],
+            "elr_interests": ["elr_interests"],
+            "elr_health": ["elr_health"],
+            "elr_family": ["elr_family"],
+            "elr_location": ["elr_location"],
+            "analytics": ["analytics"],
+            "wellbeing_report": ["analytics"],
+            "personalization": ["personalization"],
+            "research": ["research"],
+            "model_training": ["model_training"],
+            "federated_learning": ["federated_learning"],
+            "differential_privacy": ["differential_privacy"],
+            "care_coordination": ["care_coordination"],
+        }
+
+        requested_scopes = scope_map.get(data_type, [])
+
+        if not requested_scopes:
+            return True
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            policy_result = await module_client.enforce_policy(
+                user_id=user_id,
+                requested_scopes=requested_scopes,
+                requester_role="agent",
+                context=context or {"data_type": data_type},
+            )
+        except Exception as e:
+            logger.error(f"Consent policy enforcement failed: {e}")
+            return False
+
+        if not isinstance(policy_result, dict):
+            logger.error("Consent policy enforcement returned non-dict result")
+            return False
+
+        allowed = bool(policy_result.get("allowed", False))
+        if not allowed:
+            logger.info(
+                "Consent check denied",
+            )
+        return allowed
     
     def validate_memory_access(self, user_id: str, memory_content: Dict[str, Any]) -> bool:
         """
