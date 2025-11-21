@@ -244,6 +244,26 @@ async def chat(request: ChatRequest):
             except Exception as e:
                 logger.warning(f"Safety input filter failed: {e}")
 
+        if safety_chain is not None and user_memories:
+            try:
+                allowed_memories = await safety_chain.check_consent(
+                    user_id=request.user_id,
+                    data_type="elr_memories",
+                    context={
+                        "source": "dev_api_chat",
+                        "memory_items": len(user_memories),
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Consent check for memory retrieval failed: {e}")
+                allowed_memories = False
+
+            if not allowed_memories:
+                logger.info(
+                    "ELR memories will not be used in context due to consent or policy settings"
+                )
+                user_memories = []
+
         # ProjectKB search (independent of ELR, available to all users)
         proj_docs: List[Dict[str, Any]] = []
         kb = getattr(app.state, "project_kb", None)
@@ -333,6 +353,28 @@ async def chat_stream(request: ChatRequest):
             context_builder = ContextBuilder()
             # ELR user memories provided by gateway (authenticated users only)
             user_memories = request.context.get("memory_context", []) if request.context else []
+            safety_chain = getattr(app.state, "safety_chain", None)
+            if safety_chain is not None and user_memories:
+                try:
+                    allowed_memories = await safety_chain.check_consent(
+                        user_id=request.user_id,
+                        data_type="elr_memories",
+                        context={
+                            "source": "dev_api_chat_stream",
+                            "memory_items": len(user_memories),
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Consent check for memory retrieval failed (stream): %s", e
+                    )
+                    allowed_memories = False
+
+                if not allowed_memories:
+                    logger.info(
+                        "ELR memories will not be used in streaming context due to consent or policy settings"
+                    )
+                    user_memories = []
 
             # Project KB search
             proj_docs: List[Dict[str, Any]] = []
