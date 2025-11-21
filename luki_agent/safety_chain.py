@@ -10,7 +10,7 @@ import re
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .config import settings
 from .module_client import module_client
@@ -110,7 +110,7 @@ class SafetyChain:
         if violations:
             self._metrics["filters_applied"] += 1
             self._metrics["input_violations"] += 1
-            self._metrics["last_updated"] = datetime.utcnow().isoformat()
+            self._metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
             return self._create_filtered_input_message(violations), True
         
         # Apply PII redaction if enabled
@@ -119,7 +119,7 @@ class SafetyChain:
             if pii_redacted:
                 self._metrics["pii_redactions"] += 1
                 self._metrics["filters_applied"] += 1
-                self._metrics["last_updated"] = datetime.utcnow().isoformat()
+                self._metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
         
         return content, False
     
@@ -172,7 +172,7 @@ class SafetyChain:
         
         if was_filtered:
             self._metrics["filters_applied"] += 1
-            self._metrics["last_updated"] = datetime.utcnow().isoformat()
+            self._metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
         
         return content, was_filtered
     
@@ -238,7 +238,7 @@ class SafetyChain:
             return True
 
         self._metrics["consent_checks"] += 1
-        self._metrics["last_updated"] = datetime.utcnow().isoformat()
+        self._metrics["last_updated"] = datetime.now(timezone.utc).isoformat()
 
         scope_map: Dict[str, List[str]] = {
             "conversation": [],
