@@ -75,6 +75,7 @@ class ContextBuilder:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         memory_context: Optional[List[Dict[str, Any]]] = None,
         knowledge_context: Optional[List[Dict[str, Any]]] = None,  # NEW: Separate knowledge
+        wallet_context: Optional[Dict[str, Any]] = None,
         personality_mode: str = "default",
         include_safety: bool = True
     ) -> Dict[str, Any]:
@@ -88,7 +89,37 @@ class ContextBuilder:
             personality_mode=personality_mode,
             include_safety=include_safety
         )
-        
+
+        if wallet_context:
+            try:
+                wallet_connected = bool(
+                    wallet_context.get("connected")
+                    or wallet_context.get("wallet_address")
+                )
+                tier = (
+                    wallet_context.get("tier")
+                    or wallet_context.get("user_tier")
+                    or "basic"
+                )
+                has_genesis = bool(
+                    wallet_context.get("has_genesis_nft")
+                    or wallet_context.get("genesis_holder")
+                )
+                balance = wallet_context.get("luki_balance")
+
+                lines = [
+                    "## Wallet & On-Chain Status:",
+                    f"- Wallet connected: {'yes' if wallet_connected else 'no'}",
+                    f"- On-chain tier: {tier}",
+                    f"- Genesis NFT holder: {'yes' if has_genesis else 'no'}",
+                ]
+                if isinstance(balance, (int, float)):
+                    lines.append(f"- Approx. $LUKI balance: {balance}")
+
+                system_prompt = system_prompt + "\n\n" + "\n".join(lines)
+            except Exception:
+                pass
+
         # Determine auth status for logging
         is_authenticated = (
             user_id and 
@@ -275,7 +306,8 @@ class ContextBuilder:
             "conversation_history": context_slots.get('conversation_context', ''),
             "user_input": user_input,  # Pass the raw user input separately
             "user_id": user_id,  # Include user_id for function calling decisions
-            "raw_conversation_history": conversation_history or []
+            "raw_conversation_history": conversation_history or [],
+            "wallet_context": wallet_context or {},
         }
 
         # Calculate final token count based on a representative string version
