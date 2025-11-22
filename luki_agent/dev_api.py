@@ -23,6 +23,7 @@ try:
     from .context_builder import ContextBuilder
     from .memory.memory_service_client import MemoryServiceClient
     from .project_kb import ProjectKB
+    from .safety_chain import SafetyChain
     logger.info("✅ All core imports successful")
 except ImportError as e:
     logger.error(f"❌ CRITICAL IMPORT ERROR: {e}")

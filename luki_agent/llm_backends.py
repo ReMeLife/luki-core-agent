@@ -454,7 +454,7 @@ class TogetherAIBackend(LLMBackend):
             # Query length doesn't predict response complexity
             # Most responses use <2k tokens (fast), but complex topics can use more
             # 32k ceiling ensures ZERO truncation while maintaining speed
-            schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
+            schema_mode = settings.schema_mode
             use_minimal = schema_mode == "minimal"
             
             dyn_max = 32768  # Single generous limit - matches config.py, prevents truncation
