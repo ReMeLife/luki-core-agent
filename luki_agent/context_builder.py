@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 
 from .prompt_registry import prompt_registry
+from .features.tiers import infer_tier_from_balance
 
 logger = logging.getLogger(__name__)
 
@@ -96,16 +97,20 @@ class ContextBuilder:
                     wallet_context.get("connected")
                     or wallet_context.get("wallet_address")
                 )
+                balance = wallet_context.get("luki_balance")
+                inferred_tier = None
+                if isinstance(balance, (int, float)):
+                    inferred_tier = infer_tier_from_balance(balance)
                 tier = (
                     wallet_context.get("tier")
                     or wallet_context.get("user_tier")
+                    or inferred_tier
                     or "basic"
                 )
                 has_genesis = bool(
                     wallet_context.get("has_genesis_nft")
                     or wallet_context.get("genesis_holder")
                 )
-                balance = wallet_context.get("luki_balance")
 
                 lines = [
                     "## Wallet & On-Chain Status:",
