@@ -79,6 +79,15 @@ class TogetherAIBackend(LLMBackend):
         self.structured_timeout = int(os.getenv("LUKI_STRUCTURED_TIMEOUT", "20"))
         self.fast_fallback_tokens = int(os.getenv("LUKI_FALLBACK_MAX_TOKENS", "256"))
         self.fallback_model = os.getenv("LUKI_FALLBACK_MODEL")  # optional override model for fallback
+
+        # Sampling preferences for all chat calls (can be overridden via env)
+        self.top_p = float(os.getenv("LUKI_TOP_P", "0.9"))
+        self.presence_penalty = float(os.getenv("LUKI_PRESENCE_PENALTY", "0.4"))
+        self.frequency_penalty = float(os.getenv("LUKI_FREQUENCY_PENALTY", "0.2"))
+        # Optional: allow re-enabling persona ticks/actions via env. By default in
+        # this develop build we run in tickless mode so responses contain no
+        # *stage directions* unless LUKI_DISABLE_TICKS is explicitly set false.
+        self.disable_ticks = os.getenv("LUKI_DISABLE_TICKS", "true").lower() == "true"
         
         # Initialize web search tool (gracefully handle missing API key)
         try:
@@ -303,7 +312,106 @@ class TogetherAIBackend(LLMBackend):
         text = re.sub(r'[ \t]+', ' ', text)
         # Remove excessive blank lines (max 2 newlines in a row)
         text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # DEFENSIVE FIX: Collapse duplicated trailing stage ticks like
+        # "*nods slowly* slowly*" → "*nods slowly*".
+        # This can happen when we auto-close '*nods' and later rewrite it to a
+        # persona-specific action, leaving a stray "word*" segment at the end.
+        def _dedupe_trailing_tick(match: re.Match) -> str:
+            full = match.group(1)  # e.g. "*nods slowly*"
+            trailing = match.group(2)  # e.g. "slowly"
+            inner = full.strip('*').strip()
+            parts = inner.split()
+            last_word = parts[-1] if parts else ""
+            if last_word and trailing.lower() == last_word.lower():
+                # Drop the duplicated trailing "word*" segment
+                return full
+            return match.group(0)
+
+        text = re.sub(r'(\*[^\*]+\*)\s+([A-Za-z]+)\*', _dedupe_trailing_tick, text)
         return text.strip()
+
+    def _enforce_persona_actions(self, text: str, persona_mode: Optional[str]) -> str:
+        """Rewrite generic base ticks into persona-specific actions.
+
+        This is a lightweight, defensive post-processing step to guarantee that
+        LUKiCool and LUKia do not accidentally reuse base LUKi ticks like
+        *smiles*, *chuckles*, or *nods* even if the model reaches for them
+        from general training data.
+        """
+        if not text or not persona_mode:
+            return text
+
+        mode = persona_mode.lower()
+        if mode not in ("lukicool", "lukia"):
+            return text
+
+        # Only match single-word stage directions like *smiles*, not
+        # multi-word actions such as *softly smiles* which belong to LUKia.
+        pattern = re.compile(r"\*(smiles?|chuckles?|nods?)\*", re.IGNORECASE)
+
+        def repl_lukicool(match: re.Match) -> str:
+            word = match.group(1).lower()
+            # Map base LUKi ticks to a small palette so we don't overuse *smirks*.
+            if word.startswith("smile"):
+                return "*leans back*"
+            if word.startswith("chuckle"):
+                return "*snorts softly*"
+            if word.startswith("nod"):
+                return "*raises an eyebrow*"
+            return match.group(0)
+
+        def repl_lukia(match: re.Match) -> str:
+            word = match.group(1).lower()
+            if word.startswith("smile"):
+                return "*softly smiles*"
+            if word.startswith("chuckle"):
+                return "*softly smiles*"
+            if word.startswith("nod"):
+                return "*nods slowly*"
+            return match.group(0)
+
+        if mode == "lukicool":
+            return pattern.sub(repl_lukicool, text)
+        if mode == "lukia":
+            return pattern.sub(repl_lukia, text)
+        return text
+
+    def _strip_ticks(self, text: str) -> str:
+        """Remove inline *tick* style actions entirely when tickless mode is enabled.
+
+        This is intended for testing personas without any stage-direction style
+        actions. It removes short single-line segments wrapped in asterisks and
+        then collapses excess whitespace.
+        """
+        if not text:
+            return text
+
+        # Remove any single-line segment between asterisks up to a reasonable
+        # length. This will also catch italicized emphasis, which is acceptable
+        # in tickless test mode.
+        stripped = re.sub(r"\*[^*\n]{0,80}\*", "", text)
+
+        # Also defensively remove a few common bare tick phrases if they appear
+        # right at the start of the response, in case the model drops the
+        # asterisks but keeps the stage direction wording.
+        bare_leading_ticks = [
+            r"^\s*softly smiles[\s,\-:]*",
+            r"^\s*smiles softly[\s,\-:]*",
+            r"^\s*leans back[\s,\-:]*",
+            r"^\s*nods slowly[\s,\-:]*",
+            r"^\s*raises an eyebrow[\s,\-:]*",
+            r"^\s*snorts softly[\s,\-:]*",
+        ]
+        for pattern in bare_leading_ticks:
+            stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE)
+
+        # Collapse redundant spaces that may be left behind.
+        stripped = re.sub(r" {2,}", " ", stripped)
+        # Tidy up spaces around newlines.
+        stripped = re.sub(r"[ \t]+\n", "\n", stripped)
+        stripped = re.sub(r"\n[ \t]+", "\n", stripped)
+        return stripped.strip()
     
     async def _needs_web_search(self, user_input: str) -> bool:
         """
@@ -358,9 +466,272 @@ class TogetherAIBackend(LLMBackend):
         
         return False
 
+    def _is_simple_greeting(self, user_input: str) -> bool:
+        """Detect very short, greeting-only first messages like "hi", "hey", "yo".
+
+        Used to steer first-turn behavior away from low-information openers
+        like "Gotcha" / "Sure thing" and toward natural, in-character intros.
+        """
+        if not user_input:
+            return False
+
+        text = user_input.strip().lower()
+        # Strip basic punctuation so "hi!" and "yo," still match
+        text = re.sub(r"[^\w\s]", " ", text)
+        words = [w for w in text.split() if w]
+        if not words or len(words) > 5:
+            return False
+
+        greetings = {"hi", "hey", "hello", "yo", "sup", "wassup", "hiya", "heya"}
+        blockers = {"who", "what", "when", "where", "why", "how", "can", "could", "would", "will", "please", "tell", "show"}
+
+        if words[0] in greetings and not any(w in blockers for w in words):
+            return True
+        # Also treat two-word variants like "hey luki" as greetings
+        if len(words) <= 3 and words[0] in greetings and any(w in {"luki", "lukicool", "lukia"} for w in words[1:]):
+            return True
+        return False
+
+    def _has_prior_user_turn(self, prompt: Dict[str, Any]) -> bool:
+        """Return True if there is any prior USER message in raw_conversation_history.
+
+        This allows us to treat UI-seeded assistant greetings (with no user turns
+        yet) as having *no real history* for first-turn greeting guardrails, so
+        the first LLM reply after the user's initial message still counts as a
+        first turn.
+        """
+        try:
+            raw_history = prompt.get("raw_conversation_history") or []
+            if isinstance(raw_history, list) and raw_history:
+                for msg in raw_history:
+                    role = (msg.get("role") or "").lower()
+                    if role == "user":
+                        return True
+                # Only assistant/system messages so far – treat as no prior
+                # user turn for the greeting guardrail.
+                return False
+        except Exception:
+            # If anything goes wrong inspecting structured history, fall back
+            # to the presence of a non-empty conversation_history string.
+            pass
+
+        conv_text = prompt.get("conversation_history") or ""
+        return bool(str(conv_text).strip())
+
+    def _user_is_explicitly_asking_about_memory_features(self, user_input: str) -> bool:
+        """Detect when the user is *explicitly* asking about ELR/memories/Memory Panel.
+
+        In these cases it's appropriate to talk about how memories are saved,
+        ELR behaviour, or how to use the Memory Panel. For normal conversation
+        (preferences, experiences, chit-chat), this returns False so we can
+        strip product/feature talk from the reply.
+        """
+        if not user_input:
+            return False
+
+        text = user_input.strip().lower()
+        if not text:
+            return False
+
+        # Direct feature names
+        direct_keywords = [
+            "memory panel",
+            "memories & insights",
+            "memories and insights",
+            "electronic life record",
+            "electronic life records",
+            "elr",
+        ]
+        if any(kw in text for kw in direct_keywords):
+            return True
+
+        # Common patterns about how memories/ELR work or are saved/used
+        patterns = [
+            r"how (do|can) i (save|store) (a |my )?memory",
+            r"how (do|can) i (save|store) (a |my )?memories",
+            r"how are (my )?memories saved",
+            r"how does your memory work",
+            r"how does (elr|memory) work",
+            r"how do i use (the )?memory panel",
+            r"how do i use (the )?memories & insights",
+            r"how do i use (the )?memories and insights",
+            r"where (are|is) (my )?memories (saved|stored)",
+            r"list my memories",
+            r"show (me )?my memories",
+            r"what memories do you (have|remember) about me",
+            r"what do you remember about me",
+        ]
+        for pat in patterns:
+            try:
+                if re.search(pat, text):
+                    return True
+            except re.error:
+                continue
+
+        return False
+
+    def _strip_unprompted_memory_panel_mentions(self, text: str, user_input: str) -> str:
+        """Remove Memory Panel / ELR UI talk from normal replies.
+
+        If the user did *not* explicitly ask about memories/ELR/Memory Panel,
+        strip sentences that read like product instructions, such as:
+        "you can pin it in the Memory Panel" or "tucked away in your record".
+
+        This keeps casual chat focused and personal, while still allowing
+        detailed explanations when the user *does* ask how memories work.
+        """
+        if not text:
+            return text
+
+        # If the user explicitly asked about memory features, keep everything.
+        if self._user_is_explicitly_asking_about_memory_features(user_input):
+            return text
+
+        lowered = text.lower()
+        ui_keywords = [
+            "memory panel",
+            "memories & insights",
+            "memories and insights",
+            "electronic life record",
+            "electronic life records",
+            "elr",
+            # Explicit UI / panel phrasing
+            "pin it in the memory panel",
+            "pin it in your memory panel",
+            "pin that memory",
+            "pin this memory",
+            "save it as a memory",
+            "save this as a memory",
+            "saved in your record",
+            "tucked away in your record",
+            "tucked away in your records",
+            # Conversational offers to save/remember things for the user –
+            # we treat these as product/memory-system talk and strip them
+            # unless the user explicitly asked about memories/ELR.
+            "want me to add that to your memories",
+            "want me to add this to your memories",
+            "want me to add it to your memories",
+            "want me to save that to your memories",
+            "want me to save this to your memories",
+            "want me to save it to your memories",
+            "should i add that to your memories",
+            "should i save that to your memories",
+            "i'll add that to your memories",
+            "i will add that to your memories",
+            "i'll save that to your memories",
+            "i will save that to your memories",
+            "want me to remember that for you",
+            "want me to remember this for you",
+            "should i remember that for you",
+            "i can remember that for you",
+            "i'll remember that for you",
+            "i will remember that for you",
+            # Softer phrasing around memory state that still feels like
+            # product/ELR talk in normal journaling.
+            "tuck it into your memories",
+            "tuck that into your memories",
+            "tuck this into your memories",
+            "tucked into your memories",
+            "on my radar yet",
+            "on your radar yet",
+            "on my radar for you",
+        ]
+
+        if not any(kw in lowered for kw in ui_keywords):
+            return text
+
+        # Light sentence-level filter: drop any sentence containing UI keywords.
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if len(sentences) <= 1:
+            # Fallback: bluntly trim from the first UI keyword onwards.
+            for kw in ui_keywords:
+                idx = lowered.find(kw)
+                if idx != -1:
+                    return text[:idx].rstrip()
+            return text
+
+        kept: list[str] = []
+        for s in sentences:
+            sl = s.lower()
+            if any(kw in sl for kw in ui_keywords):
+                continue
+            kept.append(s)
+
+        new_text = " ".join(kept).strip()
+        # If everything was stripped, fall back to a neutral acknowledgement
+        # instead of leaking product-style memory system phrasing.
+        if not new_text:
+            return "Thanks for sharing that."
+        return new_text
+
+    def _fix_first_turn_greeting_openers(
+        self,
+        text: str,
+        user_input: str,
+        has_history: bool,
+        persona_mode: Optional[str],
+    ) -> str:
+        """Guardrail: on the *first* turn for simple greetings, avoid opening
+        with filler acknowledgments like "Gotcha.", "Got it.", or
+        "Sure thing." which feel wrong as a very first greeting.
+
+        This runs as a lightweight post-processing step AFTER model
+        generation, so it works even if the upstream prompting is not
+        perfectly respected.
+        """
+        if not text or has_history:
+            return text
+
+        stripped = text.lstrip()
+        if not stripped:
+            return text
+
+        leading_ws_len = len(text) - len(stripped)
+        lowered = stripped.lower()
+
+        banned_starts = [
+            "gotcha",
+            "got it",
+            "sure thing",
+            "absolutely",
+            "of course",
+            "understood",
+        ]
+
+        for phrase in banned_starts:
+            if lowered.startswith(phrase):
+                # Remove the banned opener and any immediate punctuation/space,
+                # including common dash characters.
+                after = stripped[len(phrase):]
+                after = after.lstrip(" ,.-:\n\t—–")
+
+                if self._is_simple_greeting(user_input):
+                    # For simple greeting inputs, replace the filler opener with
+                    # a concise persona-aware self-introduction.
+                    persona = (persona_mode or "default").lower()
+                    if persona == "lukicool":
+                        replacement = "Hey, I'm LUKiCool."
+                    elif persona == "lukia":
+                        replacement = "Hi, I'm LUKia."
+                    else:
+                        replacement = "Hey, I'm LUKi."
+
+                    rebuilt = replacement
+                    if after:
+                        rebuilt = f"{replacement} {after}"
+                else:
+                    # For non-greeting first messages, simply drop the filler
+                    # opener and continue directly with the useful content.
+                    rebuilt = after or ""
+
+                return text[:leading_ws_len] + rebuilt
+
+        return text
+
     async def generate(self, prompt: Dict[str, Any], **kwargs) -> ModelResponse:
         # Format conversation history prominently if it exists
         conversation_history = prompt.get('conversation_history', '').strip()
+        persona_mode = prompt.get('personality_mode', 'default')
         
         # CRITICAL: Add explicit conversation state awareness
         if conversation_history:
@@ -377,12 +748,23 @@ class TogetherAIBackend(LLMBackend):
                 f"{prompt['system_prompt']}\n\n{conversation_history}"
             )
         else:
-            # New conversation - normal greeting allowed
-            system_content = (
-                f"## CONVERSATION STATE: NEW SESSION\n"
-                f"This is the START of a new conversation. A greeting is appropriate.\n\n"
-                f"{prompt['system_prompt']}"
-            )
+            # New conversation - greetings allowed, but steer away from
+            # awkward first-turn openers like "Gotcha" / "Sure thing".
+            header_lines = ["## CONVERSATION STATE: NEW SESSION"]
+            if self._is_simple_greeting(prompt.get('user_input', '')):
+                header_lines.append(
+                    "The user's first message is a simple greeting (like 'hi', 'hey', 'yo').\n"
+                    "- Respond with a short, natural in-character greeting and a brief intro using the ACTIVE PERSONA.\n"
+                    "- You MAY ask one light, inviting follow-up question.\n"
+                    "- Do NOT start your reply with filler acknowledgments like 'Gotcha', 'Sure thing', 'Absolutely', 'Of course', or 'Understood'.\n"
+                    "- Treat this as meeting someone new, not as confirming an instruction."
+                )
+            else:
+                header_lines.append(
+                    "This is the START of a new conversation. A greeting is appropriate if it fits the user's tone."
+                )
+
+            system_content = "\n".join(header_lines) + "\n\n" + f"{prompt['system_prompt']}"
         
         # Debug: Log system content length and conversation status
         has_history = bool(conversation_history)
@@ -447,9 +829,9 @@ class TogetherAIBackend(LLMBackend):
                 f"{retrieval_context}\n\n"
                 f"## CRITICAL MEMORY INSTRUCTIONS:\n"
                 f"1. When user asks to 'list my memories' or similar:\n"
-                f"   - List the first 2-3 memories from above\n"
-                f"   - Then say something helpful like 'You can view all your memories in the Memory Panel' or 'Check out the full list in your memory panel'\n"
-                f"   - This prevents overwhelming responses and guides them to the panel\n"
+                f"   - List the first 2-3 memories from above, phrased naturally.\n"
+                f"   - Keep the focus on the content of those memories, not on UI or storage mechanics.\n"
+                f"   - Do NOT mention the Memory Panel or saving/pinning unless the user explicitly asked how memories/ELR work or how to use the panel.\n"
                 f"2. You MUST ONLY reference memories explicitly listed above - NEVER invent or assume memories\n"
                 f"3. The above section contains PERSONAL memories (not platform documentation)\n"
                 f"4. If the above section is empty, say 'You don't have any saved memories yet'\n"
@@ -490,14 +872,22 @@ class TogetherAIBackend(LLMBackend):
             dyn_max = 512  # Memory detection is simple, needs less tokens
             print(f"🧠 Memory detection mode: using MemoryDetectionResponse schema")
         else:
-            # Regular chat: Use generous 32k limit for ALL responses
-            # Query length doesn't predict response complexity
-            # Most responses use <2k tokens (fast), but complex topics can use more
-            # 32k ceiling ensures ZERO truncation while maintaining speed
+            # Regular chat: choose schema and a dynamic max_tokens based on input length
+            # so even short inputs get full persona-aware behavior without needing a
+            # separate trivial fast path.
             schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
             use_minimal = schema_mode == "minimal"
-            
-            dyn_max = 32768  # Single generous limit - matches config.py, prevents truncation
+
+            # Heuristic token budget: small but generous for short inputs, scaling up
+            # for longer or more complex prompts. This keeps latency low while
+            # avoiding truncation on real content.
+            if user_len <= 80:
+                dyn_max = 1024
+            elif user_len <= 400:
+                dyn_max = 4096
+            else:
+                dyn_max = 32768
+
             response_model = LUKiMinimalResponse if use_minimal else LUKiResponse
             print(f"💬 Using {response_model.__name__} with max_tokens={dyn_max}")
 
@@ -508,21 +898,57 @@ class TogetherAIBackend(LLMBackend):
             "response_model": response_model,
             "temperature": self.temperature,
             "max_tokens": dyn_max,
+            "top_p": self.top_p,
+            "presence_penalty": self.presence_penalty,
+            "frequency_penalty": self.frequency_penalty,
         }
         # Add any additional kwargs that don't conflict with our core settings
         for key, value in kwargs.items():
             if key not in final_params:
                 final_params[key] = value
 
+        # For explicitly creative requests (jokes, stories, etc.), slightly
+        # increase randomness and repetition penalties so the model is less
+        # likely to fall back to the same canned content over and over.
+        user_text_lower = prompt.get("user_input", "").lower()
+        creative_triggers = [
+            "joke",
+            "jokes",
+            "make me laugh",
+            "funny",
+            "something fun",
+            "tell me a story",
+            "story time",
+            "short story",
+            "poem",
+            "rap",
+            "rhyme",
+            "riddle",
+        ]
+        if any(t in user_text_lower for t in creative_triggers):
+            base_temp = final_params.get("temperature", self.temperature)
+            base_top_p = final_params.get("top_p", self.top_p)
+            base_presence = final_params.get("presence_penalty", self.presence_penalty)
+            base_frequency = final_params.get("frequency_penalty", self.frequency_penalty)
+
+            final_params["temperature"] = max(base_temp, 1.0)
+            final_params["top_p"] = max(base_top_p, 0.95)
+            # Stronger penalties reduce verbatim repetition across turns.
+            final_params["presence_penalty"] = max(base_presence, 0.6)
+            final_params["frequency_penalty"] = max(base_frequency, 0.5)
+
         # Debug logging to track token settings
         print(f"🔍 API call parameters: max_tokens={final_params.get('max_tokens')}, model={final_params.get('model')}")
 
-        # Fast-path for trivial inputs: skip heavy structured call
-        # Treat very short inputs as trivial regardless of context content
+        # Optional fast-path for trivial inputs is now disabled by default to ensure
+        # ALL requests (even "hi") go through the full persona-aware structured
+        # prompt.
+        # Set LUKI_TRIVIAL_FAST_PATH=true to re-enable the old behavior.
         user_len = len(prompt['user_input'].strip())
         is_trivial = user_len <= 6
-        if is_trivial:
-            print("⚡ Trivial input detected, using fast fallback path")
+        enable_trivial = os.getenv("LUKI_TRIVIAL_FAST_PATH", "false").lower() == "true"
+        if is_trivial and enable_trivial:
+            print("⚡ Trivial input detected AND LUKI_TRIVIAL_FAST_PATH=true; using legacy fast fallback path")
             minimal_system = (
                 "You are LUKi, a warm companion. For greetings or very short inputs, "
                 "reply with one short, friendly sentence. Do not include JSON or internal thoughts."
@@ -624,6 +1050,29 @@ class TogetherAIBackend(LLMBackend):
             else:
                 # Regular chat responses
                 content = getattr(luki_response, "final_response", "")
+
+                # Enforce persona-specific action ticks so LUKiCool and LUKia
+                # never leak base LUKi ticks like *smiles*, *chuckles*, or
+                # *nods*.
+                content = self._enforce_persona_actions(content, persona_mode)
+
+                # Defensive guardrail: for the *first* reply to a simple
+                # greeting, never open with filler acknowledgments such as
+                # "Gotcha.", "Got it.", or "Sure thing." which feel wrong as
+                # an initial greeting.
+                has_any_history = self._has_prior_user_turn(prompt)
+                content = self._fix_first_turn_greeting_openers(
+                    content,
+                    prompt.get("user_input", ""),
+                    has_history=has_any_history,
+                    persona_mode=persona_mode,
+                )
+                # Strip Memory Panel/ELR UI talk from normal conversational
+                # replies so chat stays focused and personal.
+                content = self._strip_unprompted_memory_panel_mentions(
+                    content,
+                    prompt.get("user_input", ""),
+                )
                 
                 # Extract web_search_used from structured response if present
                 if hasattr(luki_response, "web_search_used"):
@@ -733,6 +1182,20 @@ class TogetherAIBackend(LLMBackend):
 
             # Clean the response before returning
             cleaned_content = self._clean_response(content)
+            cleaned_content = self._enforce_persona_actions(cleaned_content, persona_mode)
+            has_any_history = self._has_prior_user_turn(prompt)
+            cleaned_content = self._fix_first_turn_greeting_openers(
+                cleaned_content,
+                prompt.get("user_input", ""),
+                has_history=has_any_history,
+                persona_mode=persona_mode,
+            )
+            cleaned_content = self._strip_unprompted_memory_panel_mentions(
+                cleaned_content,
+                prompt.get("user_input", ""),
+            )
+            if getattr(self, "disable_ticks", False):
+                cleaned_content = self._strip_ticks(cleaned_content)
             return ModelResponse(content=cleaned_content, model=self.model_name, metadata=metadata)
         except Exception as e:
             print(f"❌ API call failed: {str(e)}")
@@ -758,10 +1221,15 @@ class TogetherAIBackend(LLMBackend):
                         "You are LUKi, the ReMeLife assistant. Follow platform facts accurately. "
                         "If unsure, say you don't know. NEVER fabricate platform features or UX instructions."
                     )
+                # IMPORTANT: Respect the active persona even in fallback so
+                # LUKiCool/LUKia don't collapse back to base LUKi.
                 try:
-                    persona_core = prompt_registry.load_prompt("persona_luki", "v1")
+                    persona_core = prompt_registry.load_persona_stack(persona_mode or "default")
                 except Exception:
-                    persona_core = ""
+                    try:
+                        persona_core = prompt_registry.load_prompt("persona_luki", "v1")
+                    except Exception:
+                        persona_core = ""
                 rc = prompt.get('retrieval_context') or ""
                 kc = prompt.get('knowledge_context') or ""
                 if len(rc) > 600:
@@ -838,8 +1306,22 @@ class TogetherAIBackend(LLMBackend):
                 content = re.sub(r'(?im)^(thought|analysis|reflection)\s*:\s*.*$', '', content)
                 content = re.sub(r'<\|[^|]*\|>', '', content)
                 content = content.strip()
-                # Clean response from HTML and citations
+                # Clean response from HTML/citations and enforce persona actions
                 content = self._clean_response(content)
+                content = self._enforce_persona_actions(content, persona_mode)
+                has_any_history = self._has_prior_user_turn(prompt)
+                content = self._fix_first_turn_greeting_openers(
+                    content,
+                    prompt.get("user_input", ""),
+                    has_history=has_any_history,
+                    persona_mode=persona_mode,
+                )
+                content = self._strip_unprompted_memory_panel_mentions(
+                    content,
+                    prompt.get("user_input", ""),
+                )
+                if getattr(self, "disable_ticks", False):
+                    content = self._strip_ticks(content)
                 print("✅ Fallback call succeeded; returning sanitized content")
                 return ModelResponse(
                     content=content,
@@ -886,6 +1368,8 @@ class TogetherAIBackend(LLMBackend):
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt['user_input']}
         ]
+        persona_mode = prompt.get("personality_mode", "default")
+        has_any_history = self._has_prior_user_turn(prompt)
         # Build parameters with our settings taking absolute precedence
         # Streaming: Use same 32k generous limit as non-streaming
         schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
@@ -912,7 +1396,25 @@ class TogetherAIBackend(LLMBackend):
             stream = self.client.chat.completions.create_partial(**final_params)
             async for partial in stream:
                 if partial and partial.final_response:
-                    yield partial.final_response
+                    text = partial.final_response
+                    # Apply the same cleanup, persona enforcement, greeting guard,
+                    # and optional tick stripping as the non-streaming path so
+                    # behaviour is consistent regardless of endpoint.
+                    text = self._clean_response(text)
+                    text = self._enforce_persona_actions(text, persona_mode)
+                    text = self._fix_first_turn_greeting_openers(
+                        text,
+                        prompt.get("user_input", ""),
+                        has_history=has_any_history,
+                        persona_mode=persona_mode,
+                    )
+                    text = self._strip_unprompted_memory_panel_mentions(
+                        text,
+                        prompt.get("user_input", ""),
+                    )
+                    if getattr(self, "disable_ticks", False):
+                        text = self._strip_ticks(text)
+                    yield text
         except Exception as e:
             print(f"❌ Streaming structured call failed: {e}; attempting raw fallback stream")
             try:
@@ -1003,7 +1505,23 @@ class TogetherAIBackend(LLMBackend):
                 content = re.sub(r'(?im)^(thought|analysis|reflection)\s*:\s*.*$', '', content)
                 content = re.sub(r'<\|[^|]*\|>', '', content)
                 content = content.strip()
-                # Yield content in a couple of chunks to emulate streaming
+                # Apply the same cleanup, persona enforcement, greeting guard,
+                # and optional tick stripping as other paths, then yield in
+                # chunks to emulate streaming.
+                content = self._clean_response(content)
+                content = self._enforce_persona_actions(content, persona_mode)
+                content = self._fix_first_turn_greeting_openers(
+                    content,
+                    prompt.get("user_input", ""),
+                    has_history=has_any_history,
+                    persona_mode=persona_mode,
+                )
+                content = self._strip_unprompted_memory_panel_mentions(
+                    content,
+                    prompt.get("user_input", ""),
+                )
+                if getattr(self, "disable_ticks", False):
+                    content = self._strip_ticks(content)
                 chunk_size = 256
                 for i in range(0, len(content), chunk_size):
                     yield content[i:i+chunk_size]

@@ -220,6 +220,7 @@ tests/*
 !tests/test_integration.py
 # Keep these out of GitHub. DO NOT add these to .railwayignore so deploy includes them.
 _context/
+scripts/
 prompts/
 luki_agent/prompts_system.py
 luki_agent/knowledge_glossary.py

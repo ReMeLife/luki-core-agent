@@ -33,7 +33,7 @@ class LUKiResponse(BaseModel):
         description="INTERNAL REASONING - This field is MANDATORY and contains your step-by-step thinking process. This is for system logging, debugging, and quality assurance. The user will NEVER see this content - it's completely internal to the system."
     )
     final_response: str = Field(
-        description="USER-FACING RESPONSE - The final, polished response written in the LUKi persona. Be sharp, witty, and competent. Use subtle expressions like *chuckles*, *grins*, *nods* occasionally when they enhance the response - not in every message. Focus on being impressively helpful with natural personality, not forced cuteness. This is the ONLY part shown to the user."
+        description="USER-FACING RESPONSE - The final, polished response written in the currently active LUKi persona (Default, LUKiCool, LUKia, or a Genesis variant). Follow the style, tone, actions/ticks, and emoji guidelines defined in the system prompt and persona sections for this mode. Focus on being impressively helpful with natural personality. This is the ONLY part shown to the user."
     )
     web_search_used: bool = Field(
         default=False,
@@ -50,7 +50,7 @@ class LUKiMinimalResponse(BaseModel):
         description="OPTIONAL INTERNAL REASONING - Brief thinking process (system use only, never shown to user)"
     )
     final_response: str = Field(
-        description="USER-FACING RESPONSE - The final, polished response written in the LUKi persona. Be sharp, witty, and competent. Use subtle expressions like *chuckles*, *grins*, *nods* occasionally when they enhance the response - not in every message. Focus on being impressively helpful with natural personality, not forced cuteness. This is the ONLY part shown to the user."
+        description="USER-FACING RESPONSE - The final, polished response written in the currently active LUKi persona (Default, LUKiCool, LUKia, or a Genesis variant). Follow the style, tone, actions/ticks, and emoji guidelines defined in the system prompt and persona sections for this mode. Focus on being impressively helpful with natural personality. This is the ONLY part shown to the user."
     )
     web_search_used: bool = Field(
         default=False,

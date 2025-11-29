@@ -313,6 +313,7 @@ class ContextBuilder:
             "user_id": user_id,  # Include user_id for function calling decisions
             "raw_conversation_history": conversation_history or [],
             "wallet_context": wallet_context or {},
+            "personality_mode": personality_mode,
         }
 
         # Calculate final token count based on a representative string version

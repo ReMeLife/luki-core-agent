@@ -32,7 +32,7 @@ class AppSettings:
     }
 
     # General Model Parameters
-    model_temperature: float = 0.7
+    model_temperature: float = 0.8
     max_tokens: int = 32768  # Use model's full capacity
 
     # Context & Memory

@@ -205,6 +205,7 @@ class ChatRequest(BaseModel):
     user_id: str
     session_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
+    persona_id: Optional[str] = None
 
 @app.get("/health")
 async def health():
@@ -270,41 +271,85 @@ async def chat(request: ChatRequest):
         kb = getattr(app.state, "project_kb", None)
         if kb is not None:
             try:
-                msg_len = len(request.message.strip())
+                msg = request.message.strip()
+                msg_len = len(msg)
                 if msg_len > 12:
-                    # CRITICAL: Smart top_k selection based on query complexity
-                    # Keyword-based boost ensures complete information for critical topics
-                    msg_lower = request.message.lower()
-                    
-                    # Boost retrieval for topics requiring comprehensive documentation
-                    if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
-                        top_k = 10  # Comprehensive coverage for tokenomics queries
-                    elif msg_len <= 80:
-                        top_k = 5  # Standard coverage for short queries
+                    msg_lower = msg.lower()
+                    # Only hit ProjectKB when the user is clearly asking about
+                    # ReMeLife/LUKi/platform concepts. This prevents care- and
+                    # docs-heavy content from hijacking casual chat (e.g. "tell me a joke").
+                    platform_keywords = [
+                        "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
+                        "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
+                        "nft", "genesis", "forum", "market", "dashboard", "elr",
+                        "electronic life record", "carefi",
+                        # Referral & invite flows – ensure these always use ProjectKB
+                        "referral", "referr", "referral link", "invite friends", "community builder",
+                        # Rewards & tokenomics language
+                        "care action points", "care points", "registration bonus", "referral rewards",
+                        "referral system", "referral plan", "passive earnings", "passive income",
+                        "three level referral", "3-level referral",
+                        "tri-token", "tri token model", "tokenomics", "cad20", "care to earn",
+                        "data2earn", "data to earn", "careocracy", "universal basic income", "rubi",
+                        # DeFi / staking modules
+                        "staking", "ragency", "ragency defi", "community nft market",
+                        # Wallet navigation & UI labels
+                        "my apps", "explore more", "transaction history", "carefi hub",
+                        "your referral link", "copy link button",
+                        # Community / programs
+                        "vip club", "luki vip club", "luki rewards", "luki rewards program",
+                        "rewards program", "community builder referral",
+                        "community builder referral program", "charity launch pad",
+                        # DAO / governance / foundation
+                        "dao", "remelife foundation", "foundation",
+                        # NFTs & avatar ecosystem
+                        "genesis luki", "genesis luki nft", "luki nft", "luki's friends",
+                        "friends collection", "holder raffles", "holder benefits", "play with luki",
+                        # Technical / infrastructure
+                        "convex lattice", "convex solutions", "remegrid convex", "carefi defi",
+                        "electronic life records", "elr data", "ai for elr", "carefi services",
+                    ]
+
+                    if any(kw in msg_lower for kw in platform_keywords):
+                        # CRITICAL: Smart top_k selection based on query complexity
+                        # Keyword-based boost ensures complete information for critical topics
+                        if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
+                            top_k = 10  # Comprehensive coverage for tokenomics queries
+                        elif msg_len <= 80:
+                            top_k = 5  # Standard coverage for short queries
+                        else:
+                            top_k = 8  # Enhanced coverage for longer queries
+
+                        logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{msg[:50]}...'")
+                        proj_docs = kb.search(msg, top_k=top_k)
                     else:
-                        top_k = 8  # Enhanced coverage for longer queries
-                    
-                    logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{request.message[:50]}...'")
-                    proj_docs = kb.search(request.message, top_k=top_k)
+                        logger.info("ProjectKB: skipping search for non-platform query")
+                        proj_docs = []
                 else:
                     proj_docs = []
             except Exception as e:
                 logger.warning(f"ProjectKB search failed: {e}")
 
         logger.info(
-            f"🔍 Step 3: Building context with {len(proj_docs)} project docs and {len(user_memories)} user memories..."
-        )
+            f"🔍 Step 3: Building context with {len(proj_docs)} project docs and {len(user_memories)} user memories...")
         
         # Log actual memory content for debugging
         if user_memories:
-            logger.info(f"📦 User memories content:")
-            for idx, mem in enumerate(user_memories[:3]):  # Log first 3
+            logger.info("📦 User memories content:")
+            for idx, mem in enumerate(user_memories[:3]):  # Log first 3 memories for debugging
                 logger.info(f"  Memory {idx}: {mem.get('content', '')[:100]}...")
 
         # CRITICAL FIX: Keep project docs and user memories SEPARATE
         # Project docs are for knowledge, user memories are personal data
         # We'll pass them separately to the context builder
         
+        # Determine personality mode / persona for this request
+        persona_id = request.persona_id
+        if persona_id is None and request.context:
+            persona_id = request.context.get("persona_id") or request.context.get("personality_mode")
+        personality_mode = persona_id or "default"
+        logger.info(f"🎭 Persona selection: persona_id={persona_id!r}, personality_mode={personality_mode!r}")
+
         context_result = await context_builder.build(
             user_input=request.message,
             user_id=request.user_id,
@@ -312,6 +357,7 @@ async def chat(request: ChatRequest):
             memory_context=user_memories,  # ONLY user memories here
             knowledge_context=proj_docs,    # Project knowledge separate
             wallet_context=wallet_context,
+            personality_mode=personality_mode,
         )
         logger.info(f"✅ Step 3: Context built successfully")
         
@@ -384,26 +430,67 @@ async def chat_stream(request: ChatRequest):
             kb = getattr(app.state, "project_kb", None)
             if kb is not None:
                 try:
-                    msg_len = len(request.message.strip())
+                    msg = request.message.strip()
+                    msg_len = len(msg)
                     if msg_len > 12:
-                        # CRITICAL: Smart top_k selection based on query complexity
-                        # Keyword-based boost ensures complete information for critical topics
-                        msg_lower = request.message.lower()
-                        
-                        # Boost retrieval for topics requiring comprehensive documentation
-                        if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
-                            top_k = 10  # Comprehensive coverage for tokenomics queries
-                        elif msg_len <= 80:
-                            top_k = 5  # Standard coverage for short queries
+                        msg_lower = msg.lower()
+                        platform_keywords = [
+                            "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
+                            "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
+                            "nft", "genesis", "forum", "market", "dashboard", "elr",
+                            "electronic life record", "carefi",
+                            # Referral & invite flows – ensure these always use ProjectKB
+                            "referral", "referr", "referral link", "invite friends", "community builder",
+                            # Rewards & tokenomics language
+                            "care action points", "care points", "registration bonus", "referral rewards",
+                            "referral system", "referral plan", "passive earnings", "passive income",
+                            "three level referral", "3-level referral",
+                            "tri-token", "tri token model", "tokenomics", "cad20", "care to earn",
+                            "data2earn", "data to earn", "careocracy", "universal basic income", "rubi",
+                            # DeFi / staking modules
+                            "staking", "ragency", "ragency defi", "community nft market",
+                            # Wallet navigation & UI labels
+                            "my apps", "explore more", "transaction history", "carefi hub",
+                            "your referral link", "copy link button",
+                            # Community / programs
+                            "vip club", "luki vip club", "luki rewards", "luki rewards program",
+                            "rewards program", "community builder referral",
+                            "community builder referral program", "charity launch pad",
+                            # DAO / governance / foundation
+                            "dao", "remelife foundation", "foundation",
+                            # NFTs & avatar ecosystem
+                            "genesis luki", "genesis luki nft", "luki nft", "luki's friends",
+                            "friends collection", "holder raffles", "holder benefits", "play with luki",
+                            # Technical / infrastructure
+                            "convex lattice", "convex solutions", "remegrid convex", "carefi defi",
+                            "electronic life records", "elr data", "ai for elr", "carefi services",
+                        ]
+
+                        if any(kw in msg_lower for kw in platform_keywords):
+                            # CRITICAL: Smart top_k selection based on query complexity
+                            # Keyword-based boost ensures complete information for critical topics
+                            if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
+                                top_k = 10  # Comprehensive coverage for tokenomics queries
+                            elif msg_len <= 80:
+                                top_k = 5  # Standard coverage for short queries
+                            else:
+                                top_k = 8  # Enhanced coverage for longer queries
+
+                            logger.info(f"ProjectKB search (stream): msg_len={msg_len}, top_k={top_k}, query='{msg[:50]}...'")
+                            proj_docs = kb.search(msg, top_k=top_k)
                         else:
-                            top_k = 8  # Enhanced coverage for longer queries
-                        
-                        logger.info(f"ProjectKB search (stream): msg_len={msg_len}, top_k={top_k}, query='{request.message[:50]}...'")
-                        proj_docs = kb.search(request.message, top_k=top_k)
+                            logger.info("ProjectKB (stream): skipping search for non-platform query")
+                            proj_docs = []
                     else:
                         proj_docs = []
                 except Exception as e:
                     logger.warning(f"ProjectKB search failed (stream): {e}")
+
+            persona_id = request.persona_id
+            if persona_id is None and request.context:
+                persona_id = request.context.get("persona_id") or request.context.get("personality_mode")
+            personality_mode = persona_id or "default"
+            logger.info(f"🎭 Persona selection (stream): persona_id={persona_id!r}, personality_mode={personality_mode!r}")
 
             context_result = await context_builder.build(
                 user_input=request.message,
@@ -412,6 +499,7 @@ async def chat_stream(request: ChatRequest):
                 memory_context=user_memories,
                 knowledge_context=proj_docs,
                 wallet_context=wallet_context,
+                personality_mode=personality_mode,
             )
 
             async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
