@@ -80,14 +80,11 @@ class TogetherAIBackend(LLMBackend):
         self.fast_fallback_tokens = int(os.getenv("LUKI_FALLBACK_MAX_TOKENS", "256"))
         self.fallback_model = os.getenv("LUKI_FALLBACK_MODEL")  # optional override model for fallback
 
-        # Sampling preferences for all chat calls (can be overridden via env)
-        self.top_p = float(os.getenv("LUKI_TOP_P", "0.9"))
+        # Sampling preferences for all chat calls - optimized for Qwen3-Next-80B-A3B-Instruct
+        self.top_p = float(os.getenv("LUKI_TOP_P", "0.8"))  # Qwen recommended: 0.8
         self.presence_penalty = float(os.getenv("LUKI_PRESENCE_PENALTY", "0.4"))
         self.frequency_penalty = float(os.getenv("LUKI_FREQUENCY_PENALTY", "0.2"))
-        # Optional: allow re-enabling persona ticks/actions via env. By default in
-        # this develop build we run in tickless mode so responses contain no
-        # *stage directions* unless LUKI_DISABLE_TICKS is explicitly set false.
-        self.disable_ticks = os.getenv("LUKI_DISABLE_TICKS", "true").lower() == "true"
+        # Note: top_k and min_p are not supported by Together AI's OpenAI-compatible API
         
         # Initialize web search tool (gracefully handle missing API key)
         try:
@@ -272,39 +269,25 @@ class TogetherAIBackend(LLMBackend):
         text = re.sub(r'\[[0-9]+\]', '', text)
         
         # CRITICAL: Remove ALL metadata leakage patterns
-        # Remove web_search_used in any form (tags, plain text, key=value format)
         text = re.sub(r'<web_search_used>.*?</web_search_used>', '', text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r'\bweb_search_used\s*=\s*(true|false)\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\bweb_search_used:\s*(true|false)\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\"web_search_used\"\s*:\s*(true|false)', '', text, flags=re.IGNORECASE)
-        
-        # Remove other potential metadata leakage patterns
         text = re.sub(r'\bconfidence_score\s*=\s*[\d.]+\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\bknowledge_source\s*=\s*\w+\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\binternal_analysis\s*[:=].*?\n', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\bthought\s*[:=].*?\n', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\bmetadata\s*[:=]', '', text, flags=re.IGNORECASE)
         
-        # CRITICAL: Convert escaped markdown back to proper formatting
-        # The model sometimes generates literal \n instead of actual newlines
-        text = text.replace('\\n', '\n')
-        # Convert markdown list markers from escaped to actual
+        # Strip backslash-number artifacts (\1, \2, etc.) - model list markers
+        text = re.sub(r'\\[0-9]{1,3}', '', text)
+        
+        # Remove control characters EXCEPT newlines (\n = \x0a) and tabs (\t = \x09)
+        # This preserves markdown structure while removing garbage
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+        
+        # Convert escaped markdown list markers to actual
         text = re.sub(r'\\([*\-])', r'\1', text)
-
-        # Normalize common markdown separators that often appear inline when
-        # generated via streaming or from documentation chunks. This helps
-        # front-ends like ReactMarkdown render consistent structure instead of
-        # showing raw `*` or `---` inside long paragraphs.
-
-        # Ensure horizontal rules like "---" sit on their own line.
-        text = re.sub(r"\s+(-{3,})\s+", r"\n\n\\1\n\n", text)
-
-        # Ensure headings starting with # appear at the beginning of a line.
-        text = re.sub(r"\s+(#{1,6}\s+)", r"\n\n\\1", text)
-
-        # Ensure bullet markers "* " or "- " start on their own line when
-        # they are acting as list items rather than inline characters.
-        text = re.sub(r"([^\n])\s+([*\-]\s+)", r"\\1\n\\2", text)
         
         # TARGETED FIX: Remove stray asterisks at the very end of response
         # Only fix if asterisks appear after punctuation (likely unintentional)
@@ -344,6 +327,7 @@ class TogetherAIBackend(LLMBackend):
             return match.group(0)
 
         text = re.sub(r'(\*[^\*]+\*)\s+([A-Za-z]+)\*', _dedupe_trailing_tick, text)
+
         return text.strip()
 
     def _enforce_persona_actions(self, text: str, persona_mode: Optional[str]) -> str:
@@ -598,10 +582,6 @@ class TogetherAIBackend(LLMBackend):
         if not text:
             return text
 
-        # If the user explicitly asked about memory features, keep everything.
-        if self._user_is_explicitly_asking_about_memory_features(user_input):
-            return text
-
         lowered = text.lower()
         ui_keywords = [
             "memory panel",
@@ -651,24 +631,43 @@ class TogetherAIBackend(LLMBackend):
             "on your radar yet",
             "on my radar for you",
         ]
+        # Phrases that should NEVER appear in user-facing text, even when the user
+        # explicitly asks about memories/ELR, because they over-promise behaviour.
+        always_strip_phrases = [
+            "no need to navigate anywhere",
+            "just keep chatting and i'll remember",
+            "never asks for permission",
+            "never ask for permission",
+        ]
 
-        if not any(kw in lowered for kw in ui_keywords):
-            return text
-
-        # Light sentence-level filter: drop any sentence containing UI keywords.
+        # Light sentence-level filter: drop any sentence containing UI/marketing
+        # phrasing. For general chat, we also strip factual ELR/Memory Panel UI
+        # talk; for explicit ELR questions, we only strip the over-promising lines.
         sentences = re.split(r"(?<=[.!?])\s+", text)
         if len(sentences) <= 1:
-            # Fallback: bluntly trim from the first UI keyword onwards.
-            for kw in ui_keywords:
-                idx = lowered.find(kw)
+            # Fallback: bluntly trim from the first always-strip phrase or UI keyword
+            # onwards.
+            for phrase in always_strip_phrases:
+                idx = lowered.find(phrase)
                 if idx != -1:
                     return text[:idx].rstrip()
+            if not self._user_is_explicitly_asking_about_memory_features(user_input):
+                for kw in ui_keywords:
+                    idx = lowered.find(kw)
+                    if idx != -1:
+                        return text[:idx].rstrip()
             return text
 
         kept: list[str] = []
+        asking_about_memory = self._user_is_explicitly_asking_about_memory_features(user_input)
         for s in sentences:
             sl = s.lower()
-            if any(kw in sl for kw in ui_keywords):
+            # Always drop hard-coded over-promising phrases
+            if any(phrase in sl for phrase in always_strip_phrases):
+                continue
+            # For general chat (user not asking about memories/ELR), also drop
+            # any sentence with UI keywords.
+            if (not asking_about_memory) and any(kw in sl for kw in ui_keywords):
                 continue
             kept.append(s)
 
@@ -887,18 +886,10 @@ class TogetherAIBackend(LLMBackend):
             dyn_max = 512  # Memory detection is simple, needs less tokens
             print(f"🧠 Memory detection mode: using MemoryDetectionResponse schema")
         else:
-<<<<<<< HEAD
             # Regular chat: choose schema and a dynamic max_tokens based on input length
             # so even short inputs get full persona-aware behavior without needing a
             # separate trivial fast path.
             schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
-=======
-            # Regular chat: Use generous 32k limit for ALL responses
-            # Query length doesn't predict response complexity
-            # Most responses use <2k tokens (fast), but complex topics can use more
-            # 32k ceiling ensures ZERO truncation while maintaining speed
-            schema_mode = settings.schema_mode
->>>>>>> main
             use_minimal = schema_mode == "minimal"
 
             # Heuristic token budget: small but generous for short inputs, scaling up
@@ -984,8 +975,9 @@ class TogetherAIBackend(LLMBackend):
             candidates = []
             if self.fallback_model:
                 candidates.append(self.fallback_model)
-            if "openai/gpt-oss-20b" not in candidates:
-                candidates.append("openai/gpt-oss-20b")
+            # Fallback to a smaller, faster model if primary fails
+            if "Qwen/Qwen2.5-72B-Instruct" not in candidates:
+                candidates.append("Qwen/Qwen2.5-72B-Instruct")
             if self.model_name not in candidates:
                 candidates.append(self.model_name)
             trivial_last_error: Optional[Exception] = None
@@ -996,6 +988,7 @@ class TogetherAIBackend(LLMBackend):
                         messages=trivial_messages,
                         temperature=self.temperature,
                         max_tokens=min(self.fast_fallback_tokens, 512),
+                        top_p=self.top_p,
                     )
                     content = ""
                     try:
@@ -1176,6 +1169,7 @@ class TogetherAIBackend(LLMBackend):
                                     messages=cont_messages,
                                     temperature=self.temperature,
                                     max_tokens=cont_tokens,
+                                    top_p=self.top_p,
                                 )
                                 add = ""
                                 try:
@@ -1217,8 +1211,6 @@ class TogetherAIBackend(LLMBackend):
                 cleaned_content,
                 prompt.get("user_input", ""),
             )
-            if getattr(self, "disable_ticks", False):
-                cleaned_content = self._strip_ticks(cleaned_content)
             return ModelResponse(content=cleaned_content, model=self.model_name, metadata=metadata)
         except Exception as e:
             print(f"❌ API call failed: {str(e)}")
@@ -1247,12 +1239,9 @@ class TogetherAIBackend(LLMBackend):
                 # IMPORTANT: Respect the active persona even in fallback so
                 # LUKiCool/LUKia don't collapse back to base LUKi.
                 try:
-                    persona_core = prompt_registry.load_persona_stack(persona_mode or "default")
+                    persona_core = prompt_registry.load_prompt("persona_luki", "v1")
                 except Exception:
-                    try:
-                        persona_core = prompt_registry.load_prompt("persona_luki", "v1")
-                    except Exception:
-                        persona_core = ""
+                    persona_core = ""
                 rc = prompt.get('retrieval_context') or ""
                 kc = prompt.get('knowledge_context') or ""
                 if len(rc) > 600:
@@ -1292,6 +1281,7 @@ class TogetherAIBackend(LLMBackend):
                             messages=fallback_messages,
                             temperature=self.temperature,
                             max_tokens=fb_tokens,
+                            top_p=self.top_p,
                         )
                         break
                     except Exception as fe2:
@@ -1343,8 +1333,6 @@ class TogetherAIBackend(LLMBackend):
                     content,
                     prompt.get("user_input", ""),
                 )
-                if getattr(self, "disable_ticks", False):
-                    content = self._strip_ticks(content)
                 print("✅ Fallback call succeeded; returning sanitized content")
                 return ModelResponse(
                     content=content,
@@ -1408,6 +1396,7 @@ class TogetherAIBackend(LLMBackend):
             "response_model": stream_model,
             "temperature": self.temperature,
             "max_tokens": dyn_max,
+            "top_p": self.top_p,
             "stream": True,
         }
         # Add any additional kwargs that don't conflict with our core settings
@@ -1435,8 +1424,6 @@ class TogetherAIBackend(LLMBackend):
                         text,
                         prompt.get("user_input", ""),
                     )
-                    if getattr(self, "disable_ticks", False):
-                        text = self._strip_ticks(text)
                     yield text
         except Exception as e:
             print(f"❌ Streaming structured call failed: {e}; attempting raw fallback stream")
@@ -1543,8 +1530,6 @@ class TogetherAIBackend(LLMBackend):
                     content,
                     prompt.get("user_input", ""),
                 )
-                if getattr(self, "disable_ticks", False):
-                    content = self._strip_ticks(content)
                 chunk_size = 256
                 for i in range(0, len(content), chunk_size):
                     yield content[i:i+chunk_size]

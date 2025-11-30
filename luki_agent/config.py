@@ -19,8 +19,8 @@ class AppSettings:
     model_config: Dict[str, Any] = {
         "together": {
             "provider": "together",
-            # Prefer a faster model by default; allow override via env
-            "model_name": os.getenv("LUKI_PRIMARY_MODEL", "openai/gpt-oss-20b"),
+            # Qwen3-Next-80B-A3B-Instruct: Optimized for instruction following and formatting
+            "model_name": os.getenv("LUKI_PRIMARY_MODEL", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
             "api_key": os.getenv("TOGETHER_API_KEY")
         },
         "local_llama": {
@@ -32,7 +32,7 @@ class AppSettings:
     }
 
     # General Model Parameters
-    model_temperature: float = 0.8
+    model_temperature: float = 0.7  # Qwen3-Next recommended: 0.7
     max_tokens: int = 32768  # Use model's full capacity
     schema_mode: str = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
     structured_timeout: int = int(os.getenv("LUKI_STRUCTURED_TIMEOUT", "20"))
