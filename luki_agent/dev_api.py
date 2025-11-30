@@ -17,6 +17,30 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _is_identity_question(text: str) -> bool:
+    """Detect simple identity questions like 'who are you' that should be
+    answered as the active persona, not via platform/RAG docs.
+
+    This is intentionally lightweight and string-based so it can run in both
+    the normal chat and streaming handlers without extra model calls.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    patterns = [
+        "who are you",
+        "who are you really",
+        "what is your name",
+        "what's your name",
+        "whats your name",
+        "who am i talking to",
+        "who am i chatting with",
+        "tell me about yourself",
+    ]
+    return any(p in t for p in patterns)
+
+
 try:
     from .config import settings
     from .llm_backends import LLMManager
@@ -278,50 +302,54 @@ async def chat(request: ChatRequest):
                     # Only hit ProjectKB when the user is clearly asking about
                     # ReMeLife/LUKi/platform concepts. This prevents care- and
                     # docs-heavy content from hijacking casual chat (e.g. "tell me a joke").
-                    platform_keywords = [
-                        "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
-                        "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
-                        "nft", "genesis", "forum", "market", "dashboard", "elr",
-                        "electronic life record", "carefi",
-                        # Referral & invite flows – ensure these always use ProjectKB
-                        "referral", "referr", "referral link", "invite friends", "community builder",
-                        # Rewards & tokenomics language
-                        "care action points", "care points", "registration bonus", "referral rewards",
-                        "referral system", "referral plan", "passive earnings", "passive income",
-                        "three level referral", "3-level referral",
-                        "tri-token", "tri token model", "tokenomics", "cad20", "care to earn",
-                        "data2earn", "data to earn", "careocracy", "universal basic income", "rubi",
-                        # DeFi / staking modules
-                        "staking", "ragency", "ragency defi", "community nft market",
-                        # Wallet navigation & UI labels
-                        "my apps", "explore more", "transaction history", "carefi hub",
-                        "your referral link", "copy link button",
-                        # Community / programs
-                        "vip club", "luki vip club", "luki rewards", "luki rewards program",
-                        "rewards program", "community builder referral",
-                        "community builder referral program", "charity launch pad",
-                        # DAO / governance / foundation
-                        "dao", "remelife foundation", "foundation",
-                        # NFTs & avatar ecosystem
-                        "genesis luki", "genesis luki nft", "luki nft", "luki's friends",
-                        "friends collection", "holder raffles", "holder benefits", "play with luki",
-                        # Technical / infrastructure
-                        "convex lattice", "convex solutions", "remegrid convex", "carefi defi",
-                        "electronic life records", "elr data", "ai for elr", "carefi services",
-                    ]
+                    #
+                    # Identity questions like "who are you" should be answered
+                    # from the ACTIVE PERSONA, not via platform docs.
+                    if not _is_identity_question(msg_lower):
+                        platform_keywords = [
+                            "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
+                            "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
+                            "nft", "genesis", "forum", "market", "dashboard", "elr",
+                            "electronic life record", "carefi",
+                            # Referral & invite flows – ensure these always use ProjectKB
+                            "referral", "referr", "referral link", "invite friends", "community builder",
+                            # Rewards & tokenomics language
+                            "care action points", "care points", "registration bonus", "referral rewards",
+                            "referral system", "referral plan", "passive earnings", "passive income",
+                            "three level referral", "3-level referral",
+                            "tri-token", "tri token model", "tokenomics", "cad20", "care to earn",
+                            "data2earn", "data to earn", "careocracy", "universal basic income", "rubi",
+                            # DeFi / staking modules
+                            "staking", "ragency", "ragency defi", "community nft market",
+                            # Wallet navigation & UI labels
+                            "my apps", "explore more", "transaction history", "carefi hub",
+                            "your referral link", "copy link button",
+                            # Community / programs
+                            "vip club", "luki vip club", "luki rewards", "luki rewards program",
+                            "rewards program", "community builder referral",
+                            "community builder referral program", "charity launch pad",
+                            # DAO / governance / foundation
+                            "dao", "remelife foundation", "foundation",
+                            # NFTs & avatar ecosystem
+                            "genesis luki", "genesis luki nft", "luki nft", "luki's friends",
+                            "friends collection", "holder raffles", "holder benefits", "play with luki",
+                            # Technical / infrastructure
+                            "convex lattice", "convex solutions", "remegrid convex", "carefi defi",
+                            "electronic life records", "elr data", "ai for elr", "carefi services",
+                        ]
 
-                    if any(kw in msg_lower for kw in platform_keywords):
-                        # CRITICAL: Smart top_k selection based on query complexity
-                        # Keyword-based boost ensures complete information for critical topics
-                        if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
-                            top_k = 10  # Comprehensive coverage for tokenomics queries
-                        elif msg_len <= 80:
-                            top_k = 5  # Standard coverage for short queries
-                        else:
-                            top_k = 8  # Enhanced coverage for longer queries
+                        if any(kw in msg_lower for kw in platform_keywords):
+                            # CRITICAL: Smart top_k selection based on query complexity
+                            # Keyword-based boost ensures complete information for critical topics
+                            if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
+                                top_k = 10  # Comprehensive coverage for tokenomics queries
+                            elif msg_len <= 80:
+                                top_k = 5  # Standard coverage for short queries
+                            else:
+                                top_k = 8  # Enhanced coverage for longer queries
 
-                        logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{msg[:50]}...'")
-                        proj_docs = kb.search(msg, top_k=top_k)
+                            logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{msg[:50]}...'")
+                            proj_docs = kb.search(msg, top_k=top_k)
                     else:
                         logger.info("ProjectKB: skipping search for non-platform query")
                         proj_docs = []
@@ -432,8 +460,10 @@ async def chat_stream(request: ChatRequest):
                 try:
                     msg = request.message.strip()
                     msg_len = len(msg)
-                    if msg_len > 12:
-                        msg_lower = msg.lower()
+                    msg_lower = msg.lower()
+                    # Identity questions like "who are you" should be answered
+                    # from the ACTIVE PERSONA, not via platform docs.
+                    if msg_len > 12 and not _is_identity_question(msg_lower):
                         platform_keywords = [
                             "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
                             "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
