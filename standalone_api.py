@@ -6,9 +6,11 @@ This bypasses ALL luki_agent imports to avoid dependency issues.
 
 import os
 import logging
+import json
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, AsyncGenerator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +63,29 @@ async def chat(request: ChatRequest) -> ChatResponse:
         response=response_text,
         status="success"
     )
+
+
+@app.post("/v1/chat")
+async def chat_v1(request: ChatRequest) -> ChatResponse:
+    """Compatibility alias for /v1/chat expected by the API Gateway."""
+    return await chat(request)
+
+
+@app.post("/v1/chat/stream")
+async def chat_stream_v1(request: ChatRequest):
+    """Minimal streaming alias for /v1/chat/stream for standalone mode."""
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        try:
+            result = await chat(request)
+            payload = {"token": result.response}
+            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            logger.error(f"Streaming chat error (standalone): {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/status")
 async def status():
