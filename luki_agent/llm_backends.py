@@ -264,7 +264,7 @@ class TogetherAIBackend(LLMBackend):
         return f"{clean_query} {current_year}"
     
     def _clean_response(self, text: str) -> str:
-        """Remove HTML tags, numbered citations, and other artifacts from response."""
+        """Remove HTML/metadata noise and normalize markdown structure for rendering."""
         # Remove HTML tags
         text = re.sub(r'<[^>]+>', '', text)
         # Remove numbered citations like (1), [1], etc.
@@ -290,6 +290,21 @@ class TogetherAIBackend(LLMBackend):
         text = text.replace('\\n', '\n')
         # Convert markdown list markers from escaped to actual
         text = re.sub(r'\\([*\-])', r'\1', text)
+
+        # Normalize common markdown separators that often appear inline when
+        # generated via streaming or from documentation chunks. This helps
+        # front-ends like ReactMarkdown render consistent structure instead of
+        # showing raw `*` or `---` inside long paragraphs.
+
+        # Ensure horizontal rules like "---" sit on their own line.
+        text = re.sub(r"\s+(-{3,})\s+", r"\n\n\\1\n\n", text)
+
+        # Ensure headings starting with # appear at the beginning of a line.
+        text = re.sub(r"\s+(#{1,6}\s+)", r"\n\n\\1", text)
+
+        # Ensure bullet markers "* " or "- " start on their own line when
+        # they are acting as list items rather than inline characters.
+        text = re.sub(r"([^\n])\s+([*\-]\s+)", r"\\1\n\\2", text)
         
         # TARGETED FIX: Remove stray asterisks at the very end of response
         # Only fix if asterisks appear after punctuation (likely unintentional)

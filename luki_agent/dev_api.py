@@ -17,6 +17,30 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _is_identity_question(text: str) -> bool:
+    """Detect simple identity questions like 'who are you' that should be
+    answered as the active persona, not via platform/RAG docs.
+
+    This is intentionally lightweight and string-based so it can run in both
+    the normal chat and streaming handlers without extra model calls.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    patterns = [
+        "who are you",
+        "who are you really",
+        "what is your name",
+        "what's your name",
+        "whats your name",
+        "who am i talking to",
+        "who am i chatting with",
+        "tell me about yourself",
+    ]
+    return any(p in t for p in patterns)
+
+
 try:
     from .config import settings
     from .llm_backends import LLMManager
@@ -342,7 +366,7 @@ async def chat(request: ChatRequest):
         # CRITICAL FIX: Keep project docs and user memories SEPARATE
         # Project docs are for knowledge, user memories are personal data
         # We'll pass them separately to the context builder
-        
+
         # Determine personality mode / persona for this request
         persona_id = request.persona_id
         if persona_id is None and request.context:
@@ -432,8 +456,10 @@ async def chat_stream(request: ChatRequest):
                 try:
                     msg = request.message.strip()
                     msg_len = len(msg)
-                    if msg_len > 12:
-                        msg_lower = msg.lower()
+                    msg_lower = msg.lower()
+                    # Identity questions like "who are you" should be answered
+                    # from the ACTIVE PERSONA, not via platform docs.
+                    if msg_len > 12 and not _is_identity_question(msg_lower):
                         platform_keywords = [
                             "reme", "remelife", "remecare", "retegrid", "remegrid", "care2earn",
                             "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
