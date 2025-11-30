@@ -34,6 +34,10 @@ class AppSettings:
     # General Model Parameters
     model_temperature: float = 0.8
     max_tokens: int = 32768  # Use model's full capacity
+    schema_mode: str = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
+    structured_timeout: int = int(os.getenv("LUKI_STRUCTURED_TIMEOUT", "20"))
+    structured_timeout_long: int = int(os.getenv("LUKI_STRUCTURED_TIMEOUT_LONG", "35"))
+    autocontinue_enabled: bool = os.getenv("LUKI_AUTOCONTINUE", "true").lower() == "true"
 
     # Context & Memory
     conversation_buffer_size: int = 10
@@ -58,3 +62,11 @@ def get_model_config(backend_name: str) -> Dict[str, Any]:
     backend_conf['temperature'] = settings.model_temperature
     backend_conf['max_tokens'] = settings.max_tokens
     return backend_conf
+
+
+def get_schema_mode() -> str:
+    return settings.schema_mode
+
+
+def is_autocontinue_enabled() -> bool:
+    return settings.autocontinue_enabled

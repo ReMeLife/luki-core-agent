@@ -9,7 +9,6 @@ httpx==0.26.0
 aiohttp==3.9.1
 
 # LangChain ecosystem - stable compatible versions
-langchain-core==0.3.80
 openai==1.25.0
 instructor==1.11.3
 

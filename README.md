@@ -134,12 +134,26 @@ pip install -r requirements.txt
 
 Set environment variables (create `.env` file or set in PowerShell):
 
+<<<<<<< HEAD
+~~~bash
+<<<<<<< HEAD
+export LUKI_MODEL_BACKEND=llama33_together   # or openai
+export OPENAI_API_KEY=sk-...             # only if using fallback
+=======
+export LUKI_MODEL_BACKEND=together_ai     # or openai
+export TOGETHER_API_KEY=your_together_key # for LLaMA 3.3 access
+export OPENAI_API_KEY=your_openai_key     # only if using fallback
+>>>>>>> develop
+export MEMORY_API_URL=http://localhost:8002
+export MODULES_TOKEN=dev123               # auth to call public modules
+=======
 ~~~powershell
 $env:LUKI_MODEL_BACKEND="together"         # Together AI backend (default)
 $env:TOGETHER_API_KEY="your_together_key"   # required for Together AI models
 $env:LUKI_PRIMARY_MODEL="openai/gpt-oss-20b" # ChatGPT OSS 20B model
 $env:MEMORY_SERVICE_URL="http://localhost:8002" 
 $env:MODULES_TOKEN="dev123"                # auth to call public modules
+>>>>>>> develop
 ~~~
 
 Run dev server (optional):

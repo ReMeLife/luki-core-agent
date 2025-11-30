@@ -887,10 +887,18 @@ class TogetherAIBackend(LLMBackend):
             dyn_max = 512  # Memory detection is simple, needs less tokens
             print(f"🧠 Memory detection mode: using MemoryDetectionResponse schema")
         else:
+<<<<<<< HEAD
             # Regular chat: choose schema and a dynamic max_tokens based on input length
             # so even short inputs get full persona-aware behavior without needing a
             # separate trivial fast path.
             schema_mode = os.getenv("LUKI_SCHEMA_MODE", "minimal").lower()
+=======
+            # Regular chat: Use generous 32k limit for ALL responses
+            # Query length doesn't predict response complexity
+            # Most responses use <2k tokens (fast), but complex topics can use more
+            # 32k ceiling ensures ZERO truncation while maintaining speed
+            schema_mode = settings.schema_mode
+>>>>>>> main
             use_minimal = schema_mode == "minimal"
 
             # Heuristic token budget: small but generous for short inputs, scaling up
