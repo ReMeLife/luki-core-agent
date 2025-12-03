@@ -48,6 +48,7 @@ try:
     from .memory.memory_service_client import MemoryServiceClient
     from .project_kb import ProjectKB
     from .safety_chain import SafetyChain
+    from .tools import ToolRegistry
     logger.info("✅ All core imports successful")
 except ImportError as e:
     logger.error(f"❌ CRITICAL IMPORT ERROR: {e}")
@@ -224,12 +225,99 @@ async def on_startup():
         logger.error(f"❌ Failed to initialize ProjectKB: {e}")
         app.state.project_kb = None
 
+    # Initialize ToolRegistry for module tools (cognitive + reporting)
+    try:
+        logger.info("🔧 Initializing ToolRegistry on startup...")
+        tool_registry = ToolRegistry()
+        tool_registry.register_cognitive_tools()
+        tool_registry.register_reporting_tools()
+        app.state.tool_registry = tool_registry
+        logger.info("✅ ToolRegistry ready (cognitive + reporting tools)")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize ToolRegistry: {e}")
+        app.state.tool_registry = None
+
 class ChatRequest(BaseModel):
     message: str
     user_id: str
     session_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
     persona_id: Optional[str] = None
+
+
+async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> Optional[Dict[str, Any]]:
+    """Optionally handle specific journeys via module tools (Epic 1).
+
+    This provides a fast path for:
+    - Activity suggestions via cognitive module tools.
+    - Simple wellbeing summaries via reporting module tools.
+
+    For all other inputs, it returns None and the normal LLM pipeline runs.
+    """
+    tool_registry = getattr(app.state, "tool_registry", None)
+    if tool_registry is None:
+        return None
+
+    text = (request.message or "").strip().lower()
+    if not text:
+        return None
+
+    async def _run_tool(name: str, **kwargs) -> Optional[Dict[str, Any]]:
+        result = await tool_registry.execute_tool(name, **kwargs)
+        if not result.success or not result.content:
+            return None
+        response_text = result.content
+        # Apply output safety filter if available
+        if safety_chain is not None:
+            try:
+                await safety_chain.filter_output(response_text, request.user_id)
+            except Exception as e:
+                logger.warning(f"Safety output filter (tool '{name}') failed: {e}")
+        metadata = result.metadata or {}
+        metadata["tool_name"] = name
+        return {"response": response_text, "metadata": metadata}
+
+    # Activity suggestion triggers
+    activity_keywords = [
+        "suggest an activity",
+        "suggest some activities",
+        "activity suggestion",
+        "activity suggestions",
+        "what could i do",
+        "what should i do",
+        "something to do",
+        "things to do",
+    ]
+    if "activity" in text or any(kw in text for kw in activity_keywords):
+        ctx = request.context or {}
+        return await _run_tool(
+            "recommend_cognitive_activity",
+            user_id=request.user_id,
+            current_mood=ctx.get("current_mood"),
+            available_duration=ctx.get("available_duration"),
+            carer_available=ctx.get("carer_available", True),
+            group_setting=ctx.get("group_setting", False),
+            specific_request=request.message,
+            max_recommendations=ctx.get("max_recommendations", 3),
+        )
+
+    # Wellbeing summary triggers
+    wellbeing_keywords = [
+        "wellbeing summary",
+        "well-being summary",
+        "wellbeing report",
+        "how have i been",
+        "how am i doing",
+        "summary of my week",
+    ]
+    if any(kw in text for kw in wellbeing_keywords):
+        return await _run_tool(
+            "generate_wellbeing_report",
+            user_id=request.user_id,
+            report_type="weekly",
+        )
+
+    return None
 
 @app.get("/health")
 async def health():
@@ -269,6 +357,18 @@ async def chat(request: ChatRequest):
                 await safety_chain.filter_input(request.message, request.user_id)
             except Exception as e:
                 logger.warning(f"Safety input filter failed: {e}")
+
+        # Optionally handle specific journeys via module tools (Epic 1)
+        tool_payload = await _maybe_handle_with_tools(request, safety_chain=safety_chain)
+        if tool_payload is not None:
+            session_id = request.session_id or "new-session"
+            payload = {
+                "response": tool_payload["response"],
+                "metadata": tool_payload.get("metadata", {}),
+                "session_id": session_id,
+            }
+            logger.info("✅ Responding via module tool instead of LLM")
+            return payload
 
         if safety_chain is not None and user_memories:
             try:
@@ -461,6 +561,17 @@ async def chat_stream(request: ChatRequest):
                         "ELR memories will not be used in streaming context due to consent or policy settings"
                     )
                     user_memories = []
+
+            # Optionally handle specific journeys via module tools (Epic 1)
+            tool_payload = await _maybe_handle_with_tools(request, safety_chain=safety_chain)
+            if tool_payload is not None:
+                response_text = tool_payload["response"]
+                metadata = tool_payload.get("metadata", {})
+                logger.info("✅ Streaming response via module tool instead of LLM")
+                # Stream as a single chunk followed by done marker
+                yield f"data: {json.dumps({'token': response_text})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'metadata': metadata})}\n\n"
+                return
 
             # Project KB search
             proj_docs: List[Dict[str, Any]] = []
