@@ -54,16 +54,39 @@ class ModuleClient:
     
     # Cognitive Module Methods
     async def get_recommendations(self, user_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Get activity recommendations from cognitive module"""
+        """Get activity recommendations from cognitive module.
+
+        This method is aligned with the cognitive service's `/recommendations`
+        endpoint, which expects a RecommendationRequest-style JSON body with
+        `user_id`, an optional `context` dict, and optional top-level fields
+        like `current_mood`, `available_duration`, etc.
+        """
         try:
+            safe_context: Dict[str, Any] = context or {}
+
+            # Build payload compatible with luki-modules-cognitive main API
+            payload: Dict[str, Any] = {
+                "user_id": user_id,
+                "context": safe_context,
+                # Mirror commonly used fields from context so the service can
+                # access them directly via the request model.
+                "current_mood": safe_context.get("current_mood"),
+                "available_duration": safe_context.get("available_duration"),
+                "carer_available": safe_context.get("carer_available", True),
+                "group_setting": safe_context.get("group_setting", False),
+                "specific_request": safe_context.get("specific_request"),
+                "max_recommendations": safe_context.get("max_recommendations"),
+            }
+
             response = await self.client.post(
-                f"{self.cognitive_url}/recommendations/{user_id}",
-                json={"context": context}
+                f"{self.cognitive_url}/recommendations",
+                json=payload,
             )
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error(f"Failed to get recommendations: {e}")
+            # Keep a simple error shape so downstream tools can detect failures
             return {"status": "error", "message": str(e)}
 
     async def get_world_day_activities(self, user_id: str) -> Dict[str, Any]:
