@@ -78,12 +78,32 @@ class ModuleClient:
                 "max_recommendations": safe_context.get("max_recommendations"),
             }
 
-            response = await self.client.post(
-                f"{self.cognitive_url}/recommendations",
-                json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await self.client.post(
+                    f"{self.cognitive_url}/recommendations",
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                # Surface structured error information so tools can distinguish
+                # policy/consent denials (e.g. 403) from generic failures.
+                try:
+                    detail: Any = e.response.json()
+                except Exception:
+                    detail = e.response.text
+
+                logger.error(
+                    "Failed to get recommendations (HTTP %s): %s",
+                    e.response.status_code,
+                    detail,
+                )
+                return {
+                    "status": "error",
+                    "status_code": e.response.status_code,
+                    "error": "http_error",
+                    "detail": detail,
+                }
         except Exception as e:
             logger.error(f"Failed to get recommendations: {e}")
             # Keep a simple error shape so downstream tools can detect failures
@@ -112,6 +132,30 @@ class ModuleClient:
             return response.json()
         except Exception as e:
             logger.error(f"Failed to analyze patterns: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def generate_photo_reminiscence_images(
+        self,
+        user_id: str,
+        activity_title: Optional[str],
+        answers: List[str],
+        n: int = 1,
+    ) -> Dict[str, Any]:
+        try:
+            payload: Dict[str, Any] = {
+                "user_id": user_id,
+                "activity_title": activity_title,
+                "answers": answers,
+                "n": n,
+            }
+            response = await self.client.post(
+                f"{self.cognitive_url}/images/photo-reminiscence",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to generate photo reminiscence images: {e}")
             return {"status": "error", "message": str(e)}
     
     # Engagement Module Methods
