@@ -394,7 +394,7 @@ class CognitiveActivityRecommendationTool(BaseTool):
                      specific_request: Optional[str] = None, max_recommendations: int = 3, **kwargs) -> ToolResult:
         """Get cognitive activity recommendations"""
         try:
-            result = await self.cognitive_tools.get_recommendations(
+            raw_result = await self.cognitive_tools.get_recommendations(
                 user_id=user_id,
                 context={
                     "current_mood": current_mood,
@@ -405,9 +405,32 @@ class CognitiveActivityRecommendationTool(BaseTool):
                     "max_recommendations": max_recommendations
                 }
             )
-            
-            if result.get("success", False):
-                recommendations = result.get("recommendations", [])
+
+            # Normalize HTTP response from cognitive module into a common shape.
+            # The HTTP `/recommendations` endpoint returns a RecommendationResponse
+            # payload with `recommendations`, `user_id`, and `timestamp`, but no
+            # explicit `success` flag. Older in-process tools may still use a
+            # `{success: bool, recommendations: [...]}` style payload.
+            result: Dict[str, Any] = raw_result or {}
+
+            if "success" in result:
+                # Legacy / non-HTTP style: respect the explicit success flag.
+                success = bool(result.get("success", False))
+                recommendations = result.get("recommendations", []) or []
+            else:
+                # HTTP RecommendationResponse: treat presence of recommendations
+                # as success and synthesize a `success` flag for downstream
+                # consumers (including UI metadata rendering).
+                recommendations = result.get("recommendations", []) or []
+                success = bool(recommendations)
+                # Re-wrap into a richer structure without losing fields.
+                result = {
+                    "success": success,
+                    "recommendations": recommendations,
+                    **{k: v for k, v in result.items() if k not in ("success", "recommendations")},
+                }
+
+            if success:
                 content = f"I found {len(recommendations)} personalized activities for you:\n\n"
                 
                 for i, rec in enumerate(recommendations, 1):
@@ -427,10 +450,53 @@ class CognitiveActivityRecommendationTool(BaseTool):
                     metadata=result
                 )
             else:
+                # If we reach here, the HTTP call itself worked but no
+                # recommendations were returned. This may be a generic
+                # error, or a structured policy/consent denial coming from
+                # the cognitive service or security-privacy module.
+
+                status_code = result.get("status_code")
+                detail = result.get("detail")
+                policy_info: Dict[str, Any] = {}
+                policy_error_code: Optional[str] = None
+
+                if isinstance(detail, dict):
+                    # Cognitive service 403 path returns
+                    # {"error": ..., "policy": {...}}
+                    policy_error_code = detail.get("error")
+                    # Prefer explicit policy block, but fall back to full detail
+                    policy_obj = detail.get("policy") or detail
+                    if isinstance(policy_obj, dict):
+                        policy_info = policy_obj
+
+                # Treat policy/consent denials as a soft-success so the
+                # dev_api still responds via the tool path with a clear
+                # explanation instead of silently falling back.
+                if status_code == 403 or policy_error_code in (
+                    "consent_denied",
+                    "privacy_flags_denied",
+                    "policy_denied",
+                ):
+                    friendly_message = (
+                        "I'm not currently allowed to use your data to fetch "
+                        "activity suggestions. You can review your Privacy & Data "
+                        "settings if you'd like me to suggest activities in the future."
+                    )
+                    metadata: Dict[str, Any] = {}
+                    if policy_info:
+                        metadata["policy"] = policy_info
+
+                    return ToolResult(
+                        success=True,
+                        content=friendly_message,
+                        metadata=metadata or None,
+                    )
+
+                error_message = result.get("error") or result.get("message") or "Unknown error"
                 return ToolResult(
                     success=False,
                     content="I couldn't find suitable activities right now. Let me try a different approach.",
-                    error=result.get("error", "Unknown error")
+                    error=error_message,
                 )
                 
         except Exception as e:
