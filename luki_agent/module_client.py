@@ -78,12 +78,32 @@ class ModuleClient:
                 "max_recommendations": safe_context.get("max_recommendations"),
             }
 
-            response = await self.client.post(
-                f"{self.cognitive_url}/recommendations",
-                json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await self.client.post(
+                    f"{self.cognitive_url}/recommendations",
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                # Surface structured error information so tools can distinguish
+                # policy/consent denials (e.g. 403) from generic failures.
+                try:
+                    detail: Any = e.response.json()
+                except Exception:
+                    detail = e.response.text
+
+                logger.error(
+                    "Failed to get recommendations (HTTP %s): %s",
+                    e.response.status_code,
+                    detail,
+                )
+                return {
+                    "status": "error",
+                    "status_code": e.response.status_code,
+                    "error": "http_error",
+                    "detail": detail,
+                }
         except Exception as e:
             logger.error(f"Failed to get recommendations: {e}")
             # Keep a simple error shape so downstream tools can detect failures
@@ -112,6 +132,82 @@ class ModuleClient:
             return response.json()
         except Exception as e:
             logger.error(f"Failed to analyze patterns: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def generate_photo_reminiscence_images(
+        self,
+        user_id: str,
+        activity_title: Optional[str],
+        answers: List[str],
+        n: int = 1,
+    ) -> Dict[str, Any]:
+        """Call cognitive image service for photo reminiscence.
+
+        Special-case HTTP 429 from the cognitive module so that callers can
+        surface a friendly cooldown message to the user instead of treating it
+        as a generic 5xx-style failure.
+        """
+
+        try:
+            payload: Dict[str, Any] = {
+                "user_id": user_id,
+                "activity_title": activity_title,
+                "answers": answers,
+                "n": n,
+            }
+            response = await self.client.post(
+                f"{self.cognitive_url}/images/photo-reminiscence",
+                json=payload,
+            )
+
+            # If the cognitive service returns a 429, preserve the structured
+            # detail so upstream layers (core API, gateway, frontends) can
+            # display a clear cooldown message.
+            if response.status_code == 429:
+                try:
+                    raw = response.json()
+                except ValueError:
+                    raw = {"detail": response.text}
+
+                if isinstance(raw, dict):
+                    container = raw
+                    inner = container.get("detail", raw)
+                else:
+                    inner = {"message": str(raw)}
+
+                return {
+                    "status": "rate_limited",
+                    "status_code": 429,
+                    "detail": inner,
+                }
+
+            # All other non-success statuses are treated as generic HTTP errors
+            # and reported back to the caller with the status code for context.
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail: Any
+                try:
+                    detail = e.response.json()
+                except ValueError:
+                    detail = e.response.text
+            except Exception:
+                detail = "<unparseable error body>"
+
+            logger.error(
+                "Failed to generate photo reminiscence images (HTTP %s): %s",
+                e.response.status_code,
+                detail,
+            )
+            return {
+                "status": "error",
+                "status_code": e.response.status_code,
+                "error": "http_error",
+                "detail": detail,
+            }
+        except Exception as e:
+            logger.error(f"Failed to generate photo reminiscence images: {e}")
             return {"status": "error", "message": str(e)}
     
     # Engagement Module Methods

@@ -49,6 +49,7 @@ try:
     from .project_kb import ProjectKB
     from .safety_chain import SafetyChain
     from .tools import ToolRegistry
+    from .module_client import ModuleClient
     logger.info("✅ All core imports successful")
 except ImportError as e:
     logger.error(f"❌ CRITICAL IMPORT ERROR: {e}")
@@ -245,6 +246,13 @@ class ChatRequest(BaseModel):
     persona_id: Optional[str] = None
 
 
+class PhotoReminiscenceImageRequest(BaseModel):
+    user_id: str
+    activity_title: Optional[str] = None
+    answers: List[str]
+    n: Optional[int] = 1
+
+
 async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> Optional[Dict[str, Any]]:
     """Optionally handle specific journeys via module tools (Epic 1).
 
@@ -323,6 +331,59 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
 async def health():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.post("/v1/reme/photo-reminiscence-images")
+async def photo_reminiscence_images(request: PhotoReminiscenceImageRequest):
+    """Generate one or more images for the Photo Reminiscence activity.
+
+    This is a thin proxy over the cognitive module's `/images/photo-reminiscence`
+    endpoint so that frontends can call the core agent without talking directly
+    to module services.
+    """
+    if not request.answers:
+        raise HTTPException(status_code=400, detail="At least one answer is required")
+
+    try:
+        async with ModuleClient() as module_client:
+            result = await module_client.generate_photo_reminiscence_images(
+                user_id=request.user_id,
+                activity_title=request.activity_title,
+                answers=request.answers,
+                n=request.n or 1,
+            )
+
+        # Module client returns a small status envelope so callers can
+        # distinguish between generic failures and rate limiting.
+        if isinstance(result, dict):
+            status_val = result.get("status")
+
+            # Rate-limited: surface as HTTP 429 with structured JSON detail so
+            # the gateway and frontends can show a clear cooldown message.
+            if status_val == "rate_limited":
+                detail = result.get("detail") or {"message": "Image generation temporarily rate limited"}
+                raise HTTPException(status_code=429, detail=detail)
+
+            # Generic error: map through the underlying status_code if present
+            # so observability remains intact, falling back to 502.
+            if status_val == "error":
+                message = result.get("message") or "Image generation failed"
+                status_code = int(result.get("status_code") or 502)
+                raise HTTPException(status_code=status_code, detail=message)
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Photo reminiscence images endpoint error: %s\n%s",
+            e,
+            traceback.format_exc(),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An internal error occurred while generating images",
+        )
 
 @app.post("/v1/chat")
 async def chat(request: ChatRequest):
