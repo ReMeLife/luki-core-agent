@@ -353,9 +353,23 @@ async def photo_reminiscence_images(request: PhotoReminiscenceImageRequest):
                 n=request.n or 1,
             )
 
-        if isinstance(result, dict) and result.get("status") == "error":
-            message = result.get("message") or "Image generation failed"
-            raise HTTPException(status_code=502, detail=message)
+        # Module client returns a small status envelope so callers can
+        # distinguish between generic failures and rate limiting.
+        if isinstance(result, dict):
+            status_val = result.get("status")
+
+            # Rate-limited: surface as HTTP 429 with structured JSON detail so
+            # the gateway and frontends can show a clear cooldown message.
+            if status_val == "rate_limited":
+                detail = result.get("detail") or {"message": "Image generation temporarily rate limited"}
+                raise HTTPException(status_code=429, detail=detail)
+
+            # Generic error: map through the underlying status_code if present
+            # so observability remains intact, falling back to 502.
+            if status_val == "error":
+                message = result.get("message") or "Image generation failed"
+                status_code = int(result.get("status_code") or 502)
+                raise HTTPException(status_code=status_code, detail=message)
 
         return result
     except HTTPException:
