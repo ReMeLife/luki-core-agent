@@ -1032,7 +1032,12 @@ class TogetherAIBackend(LLMBackend):
         eff_timeout = self.structured_timeout if user_len <= 60 else max(self.structured_timeout, long_timeout)
 
         try:
-            print(f"🔍 Making API call to Together AI (structured, soft timeout={eff_timeout}s)...")
+            has_api_key = bool(os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY"))
+            print(
+                f"🔍 Making API call to Together AI (structured) | "
+                f"model={self.model_name} soft_timeout={eff_timeout}s user_len={user_len} "
+                f"web_search_used={web_search_used} api_key_present={has_api_key}"
+            )
             luki_response: Any = await asyncio.wait_for(
                 self.client.chat.completions.create(**final_params),
                 timeout=eff_timeout,
@@ -1215,6 +1220,12 @@ class TogetherAIBackend(LLMBackend):
         except Exception as e:
             print(f"❌ API call failed: {str(e)}")
             print(f"❌ Error type: {type(e).__name__}")
+            try:
+                import asyncio as _asyncio
+                is_timeout = isinstance(e, _asyncio.TimeoutError)
+                print(f"❌ Is asyncio.TimeoutError: {is_timeout}")
+            except Exception:
+                pass
             import traceback
             print(f"❌ Full traceback: {traceback.format_exc()}")
             # Fallback: try a raw client call without structured output to ensure user gets a response
