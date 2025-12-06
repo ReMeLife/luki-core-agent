@@ -436,8 +436,6 @@ class CognitiveActivityRecommendationTool(BaseTool):
                 for i, rec in enumerate(recommendations, 1):
                     content += f"{i}. **{rec.get('title', 'Activity')}**\n"
                     content += f"   {rec.get('description', '')}\n"
-                    if rec.get('duration_minutes'):
-                        content += f"   Duration: {rec['duration_minutes']} minutes\n"
                     if rec.get('difficulty_level'):
                         content += f"   Difficulty: {rec['difficulty_level']}\n"
                     content += "\n"
