@@ -675,6 +675,221 @@ class GetMyStoryPromptTool(BaseTool):
             return ToolResult(success=False, content=f"I encountered an issue: {str(e)}")
 
 
+class LifeStoryRecordingTool(BaseTool):
+    """Tool for guided life story recording sessions"""
+    
+    def __init__(self):
+        if not COGNITIVE_MODULES_AVAILABLE or CognitiveTools is None:
+            raise ImportError("Cognitive modules not available")
+        self.cognitive_tools = CognitiveTools  # Use the module_client instance
+    
+    @property
+    def name(self) -> str:
+        return "life_story_recording"
+    
+    @property
+    def description(self) -> str:
+        return "Start or continue a guided life story recording session to capture memories across different life phases (childhood, education, career, relationships, achievements, challenges)"
+    
+    async def execute(
+        self,
+        user_id: str,
+        action: str = "start",
+        session_id: Optional[str] = None,
+        response_text: Optional[str] = None,
+        skip_phase: bool = False,
+        approximate_date: Optional[str] = None,
+        **kwargs
+    ) -> ToolResult:
+        """Execute life story recording action
+        
+        Args:
+            user_id: User identifier
+            action: One of 'start', 'continue', 'list', 'delete'
+            session_id: Required for 'continue' and 'delete' actions
+            response_text: User's response (for 'continue' action)
+            skip_phase: Skip current phase without recording (for 'continue')
+            approximate_date: Optional date context like "1960s", "childhood"
+        """
+        try:
+            if action == "start":
+                result = await self.cognitive_tools.start_life_story_session(user_id)
+                
+                if result.get("success", False):
+                    resumed = result.get("resumed", False)
+                    prompt = result.get("prompt", "")
+                    phase = result.get("current_phase", "introduction")
+                    phase_index = result.get("phase_index", 0)
+                    total_phases = result.get("total_phases", 9)
+                    
+                    if resumed:
+                        content = f"📖 **Welcome back to your Life Story!**\n\n"
+                        content += f"We're on phase {phase_index + 1} of {total_phases}: **{phase.replace('_', ' ').title()}**\n\n"
+                    else:
+                        content = f"📖 **Let's capture your Life Story**\n\n"
+                        content += "I'll guide you through different chapters of your life. Share as much or as little as feels comfortable.\n\n"
+                    
+                    content += f"**{prompt}**\n\n"
+                    
+                    if result.get("skip_allowed", True):
+                        content += "_You can skip any question that doesn't feel right._"
+                    
+                    return ToolResult(
+                        success=True,
+                        content=content,
+                        metadata=result
+                    )
+                else:
+                    return ToolResult(
+                        success=False,
+                        content="I had trouble starting your life story session. Would you like to try again?",
+                        error=result.get("error", "Unknown error")
+                    )
+            
+            elif action == "continue":
+                if not session_id:
+                    return ToolResult(
+                        success=False,
+                        content="I need to know which session to continue. Would you like to start a new life story session?",
+                        error="session_id required"
+                    )
+                
+                result = await self.cognitive_tools.continue_life_story_session(
+                    user_id=user_id,
+                    session_id=session_id,
+                    response_text=response_text or "",
+                    skip_phase=skip_phase,
+                    approximate_date=approximate_date,
+                )
+                
+                if result.get("success", False):
+                    if result.get("completed", False):
+                        # Session complete
+                        content = f"📚 **Your Life Story session is complete!**\n\n"
+                        content += f"Thank you for sharing {result.get('chunks_recorded', 0)} memories with me.\n\n"
+                        if result.get("summary"):
+                            content += f"_{result['summary']}_\n\n"
+                        content += result.get("prompt", "Your story has been saved. You can always come back to add more.")
+                        
+                        return ToolResult(
+                            success=True,
+                            content=content,
+                            metadata=result
+                        )
+                    else:
+                        # Continue to next phase
+                        prompt = result.get("prompt", "")
+                        phase = result.get("current_phase", "")
+                        phase_index = result.get("phase_index", 0)
+                        total_phases = result.get("total_phases", 9)
+                        
+                        content = f"📖 **{phase.replace('_', ' ').title()}** (Phase {phase_index + 1} of {total_phases})\n\n"
+                        content += f"**{prompt}**\n\n"
+                        
+                        follow_ups = result.get("follow_ups", [])
+                        if follow_ups:
+                            content += "_Some ideas:_ "
+                            content += ", ".join(follow_ups[:2])
+                            content += "\n\n"
+                        
+                        if result.get("skip_allowed", True):
+                            content += "_Feel free to skip if this doesn't feel right._"
+                        
+                        return ToolResult(
+                            success=True,
+                            content=content,
+                            metadata=result
+                        )
+                else:
+                    error = result.get("error", "Unknown error")
+                    if error == "session_not_found":
+                        return ToolResult(
+                            success=False,
+                            content="I couldn't find that session. Would you like to start a new life story?",
+                            error=error
+                        )
+                    return ToolResult(
+                        success=False,
+                        content="I had trouble saving that memory. Let's try again.",
+                        error=error
+                    )
+            
+            elif action == "list":
+                result = await self.cognitive_tools.get_life_story_sessions(
+                    user_id=user_id,
+                    include_chunks=kwargs.get("include_chunks", False),
+                )
+                
+                if result.get("success", False):
+                    sessions = result.get("sessions", [])
+                    if not sessions:
+                        content = "📖 You haven't started any life story sessions yet.\n\n"
+                        content += "Would you like to begin capturing your life story?"
+                    else:
+                        content = f"📖 **Your Life Story Sessions** ({len(sessions)} total)\n\n"
+                        for i, session in enumerate(sessions, 1):
+                            status = session.get("status", "unknown")
+                            status_emoji = "✅" if status == "completed" else "📝"
+                            content += f"{i}. {status_emoji} {status.title()}\n"
+                            content += f"   Started: {session.get('started_at', 'unknown')[:10]}\n"
+                            content += f"   Memories: {session.get('chunks_count', 0)}\n"
+                            if session.get("summary"):
+                                content += f"   _{session['summary'][:80]}..._\n"
+                            content += "\n"
+                    
+                    return ToolResult(
+                        success=True,
+                        content=content,
+                        metadata=result
+                    )
+                else:
+                    return ToolResult(
+                        success=False,
+                        content="I couldn't retrieve your life story sessions right now.",
+                        error=result.get("error", "Unknown error")
+                    )
+            
+            elif action == "delete":
+                if not session_id:
+                    return ToolResult(
+                        success=False,
+                        content="I need to know which session to delete.",
+                        error="session_id required"
+                    )
+                
+                result = await self.cognitive_tools.delete_life_story_session(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                
+                if result.get("success", False):
+                    return ToolResult(
+                        success=True,
+                        content="Your life story session has been deleted.",
+                        metadata=result
+                    )
+                else:
+                    return ToolResult(
+                        success=False,
+                        content="I couldn't delete that session. Please try again.",
+                        error=result.get("error", "Unknown error")
+                    )
+            
+            else:
+                return ToolResult(
+                    success=False,
+                    content=f"Unknown action '{action}'. Use 'start', 'continue', 'list', or 'delete'.",
+                    error="invalid_action"
+                )
+                
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                content="I'm having trouble with life story recording right now.",
+                error=f"Life story recording failed: {str(e)}"
+            )
+
+
 class GenerateWellbeingReportTool(BaseTool):
     """Tool for generating wellbeing reports"""
     
@@ -1142,7 +1357,8 @@ class ToolRegistry:
             self.register_tool(WorldDayActivitiesTool())
             self.register_tool(ActivityEngagementTool())
             self.register_tool(GetMyStoryPromptTool(CognitiveTools))
-            print("✅ Cognitive tools registered successfully")
+            self.register_tool(LifeStoryRecordingTool())
+            print("✅ Cognitive tools registered successfully (including Life Story Recording)")
         except Exception as e:
             print(f"❌ Failed to register cognitive tools: {e}")
     
