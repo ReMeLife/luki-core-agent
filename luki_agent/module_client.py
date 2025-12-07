@@ -121,6 +121,120 @@ class ModuleClient:
             logger.error(f"Failed to get world day activities: {e}")
             return {"status": "error", "message": str(e)}
     
+    # Life Story Recording Methods
+    async def start_life_story_session(self, user_id: str) -> Dict[str, Any]:
+        """Start a new life story recording session"""
+        try:
+            response = await self.client.post(
+                f"{self.cognitive_url}/life-story/start",
+                json={"user_id": user_id}
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json()
+            except Exception:
+                detail = e.response.text
+            logger.error(f"Failed to start life story session (HTTP {e.response.status_code}): {detail}")
+            return {
+                "status": "error",
+                "status_code": e.response.status_code,
+                "error": "http_error",
+                "detail": detail,
+            }
+        except Exception as e:
+            logger.error(f"Failed to start life story session: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def continue_life_story_session(
+        self,
+        user_id: str,
+        session_id: str,
+        response_text: str,
+        skip_phase: bool = False,
+        approximate_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Continue a life story session with a new response"""
+        try:
+            payload = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "response_text": response_text,
+                "skip_phase": skip_phase,
+            }
+            if approximate_date:
+                payload["approximate_date"] = approximate_date
+            
+            response = await self.client.post(
+                f"{self.cognitive_url}/life-story/continue",
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json()
+            except Exception:
+                detail = e.response.text
+            logger.error(f"Failed to continue life story session (HTTP {e.response.status_code}): {detail}")
+            return {
+                "status": "error",
+                "status_code": e.response.status_code,
+                "error": "http_error",
+                "detail": detail,
+            }
+        except Exception as e:
+            logger.error(f"Failed to continue life story session: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def get_life_story_sessions(
+        self,
+        user_id: str,
+        include_chunks: bool = False,
+    ) -> Dict[str, Any]:
+        """Get all life story sessions for a user"""
+        try:
+            params = {"include_chunks": str(include_chunks).lower()}
+            response = await self.client.get(
+                f"{self.cognitive_url}/life-story/sessions/{user_id}",
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get life story sessions: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def delete_life_story_session(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """Delete a life story session"""
+        try:
+            response = await self.client.delete(
+                f"{self.cognitive_url}/life-story/sessions/{session_id}",
+                params={"user_id": user_id}
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to delete life story session: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def get_life_story_phases(self) -> Dict[str, Any]:
+        """Get all available life story phases"""
+        try:
+            response = await self.client.get(
+                f"{self.cognitive_url}/life-story/phases"
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get life story phases: {e}")
+            return {"status": "error", "message": str(e)}
+    
     async def analyze_patterns(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze user patterns with cognitive module"""
         try:
