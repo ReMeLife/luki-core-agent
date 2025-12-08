@@ -71,7 +71,7 @@ class MemoryRetriever:
                 search_payload["time_range"] = time_range
             
             response = await self.session.post(
-                f"{self.memory_service_url}/v1/search/semantic",
+                f"{self.memory_service_url}/search/memories",
                 json=search_payload,
                 headers=self._get_headers()
             )
