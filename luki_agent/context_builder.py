@@ -78,7 +78,8 @@ class ContextBuilder:
         knowledge_context: Optional[List[Dict[str, Any]]] = None,  # NEW: Separate knowledge
         wallet_context: Optional[Dict[str, Any]] = None,
         personality_mode: str = "default",
-        include_safety: bool = True
+        include_safety: bool = True,
+        world_day_context: Optional[Dict[str, Any]] = None  # World day awareness
     ) -> Dict[str, Any]:
         """Build context with strict slot separation and sanitization"""
         
@@ -124,6 +125,29 @@ class ContextBuilder:
                 system_prompt = system_prompt + "\n\n" + "\n".join(lines)
             except Exception:
                 pass
+
+        # Add world day context if provided (for "today's world day" awareness)
+        if world_day_context:
+            try:
+                world_day_name = world_day_context.get("name", "")
+                world_day_desc = world_day_context.get("description", "")
+                world_day_fact = world_day_context.get("fun_fact", "")
+                world_day_emoji = world_day_context.get("emoji", "🌍")
+                
+                if world_day_name:
+                    today_str = datetime.now().strftime("%B %d")
+                    world_day_lines = [
+                        f"## Today's World Day ({today_str}):",
+                        f"- {world_day_emoji} **{world_day_name}**",
+                        f"- {world_day_desc}" if world_day_desc else "",
+                        f"- Fun fact: {world_day_fact}" if world_day_fact else "",
+                        "",
+                        "If the user asks about today's world day, special day, or what day it is, share this information in your signature LUKi style. Don't force it into unrelated conversations."
+                    ]
+                    system_prompt = system_prompt + "\n\n" + "\n".join(line for line in world_day_lines if line)
+                    print(f"🌍 Added world day context: {world_day_name}")
+            except Exception as e:
+                print(f"⚠️ Failed to add world day context: {e}")
 
         # Determine auth status for logging
         is_authenticated = (

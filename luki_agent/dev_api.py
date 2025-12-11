@@ -548,6 +548,13 @@ async def chat(request: ChatRequest):
         personality_mode = persona_id or "default"
         logger.info(f"🎭 Persona selection: persona_id={persona_id!r}, personality_mode={personality_mode!r}")
 
+        # Extract world day context if provided (for "today's world day" awareness)
+        world_day_context = None
+        if request.context:
+            world_day_context = request.context.get("world_day")
+            if world_day_context:
+                logger.info(f"🌍 World day context: {world_day_context.get('name', 'unknown')}")
+
         context_result = await context_builder.build(
             user_input=request.message,
             user_id=request.user_id,
@@ -556,6 +563,7 @@ async def chat(request: ChatRequest):
             knowledge_context=proj_docs,    # Project knowledge separate
             wallet_context=wallet_context,
             personality_mode=personality_mode,
+            world_day_context=world_day_context,  # World day awareness
         )
         logger.info(f"✅ Step 3: Context built successfully")
         
@@ -703,6 +711,13 @@ async def chat_stream(request: ChatRequest):
             personality_mode = persona_id or "default"
             logger.info(f"🎭 Persona selection (stream): persona_id={persona_id!r}, personality_mode={personality_mode!r}")
 
+            # Extract world day context if provided (for "today's world day" awareness)
+            world_day_context = None
+            if request.context:
+                world_day_context = request.context.get("world_day")
+                if world_day_context:
+                    logger.info(f"🌍 World day context (stream): {world_day_context.get('name', 'unknown')}")
+
             context_result = await context_builder.build(
                 user_input=request.message,
                 user_id=request.user_id,
@@ -711,6 +726,7 @@ async def chat_stream(request: ChatRequest):
                 knowledge_context=proj_docs,
                 wallet_context=wallet_context,
                 personality_mode=personality_mode,
+                world_day_context=world_day_context,  # World day awareness
             )
 
             async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
