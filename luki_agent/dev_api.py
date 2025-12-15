@@ -251,6 +251,7 @@ class PhotoReminiscenceImageRequest(BaseModel):
     activity_title: Optional[str] = None
     answers: List[str]
     n: Optional[int] = 1
+    account_tier: Optional[str] = "free"  # free, plus, pro - determines image generation limits
 
 
 async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> Optional[Dict[str, Any]]:
@@ -351,6 +352,7 @@ async def photo_reminiscence_images(request: PhotoReminiscenceImageRequest):
                 activity_title=request.activity_title,
                 answers=request.answers,
                 n=request.n or 1,
+                account_tier=request.account_tier or "free",
             )
 
         # Module client returns a small status envelope so callers can
