@@ -254,12 +254,16 @@ class ModuleClient:
         activity_title: Optional[str],
         answers: List[str],
         n: int = 1,
+        account_tier: str = "free",
     ) -> Dict[str, Any]:
         """Call cognitive image service for photo reminiscence.
 
         Special-case HTTP 429 from the cognitive module so that callers can
         surface a friendly cooldown message to the user instead of treating it
         as a generic 5xx-style failure.
+        
+        Args:
+            account_tier: User's subscription tier (free, plus, pro) for rate limiting
         """
 
         try:
@@ -268,10 +272,13 @@ class ModuleClient:
                 "activity_title": activity_title,
                 "answers": answers,
                 "n": n,
+                "account_tier": account_tier,
             }
+            # Use extended timeout for image generation (Together API can take 45+ seconds)
             response = await self.client.post(
                 f"{self.cognitive_url}/images/photo-reminiscence",
                 json=payload,
+                timeout=90.0,
             )
 
             # If the cognitive service returns a 429, preserve the structured
