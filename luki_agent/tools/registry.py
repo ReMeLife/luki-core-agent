@@ -1321,6 +1321,120 @@ class LangChainToolWrapper(BaseTool):
             )
 
 
+class UploadSearchTool(BaseTool):
+    """Tool for searching user uploads via the API Gateway"""
+    
+    def __init__(self, api_gateway_url: Optional[str] = None):
+        self.api_gateway_url = api_gateway_url or os.getenv(
+            "LUKI_API_GATEWAY_URL", 
+            "https://diplomatic-recreation-staging.up.railway.app"
+        )
+    
+    @property
+    def name(self) -> str:
+        return "search_uploads"
+    
+    @property
+    def description(self) -> str:
+        return "Search user's uploaded files (photos, documents) by description, title, tags, or collection name. Use this when the user asks about their photos, images, files, or uploads."
+    
+    async def execute(self, query: str, user_id: str, limit: int = 5, **kwargs) -> ToolResult:
+        """Search user uploads"""
+        import aiohttp
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"🔍 UploadSearchTool.execute: user_id={user_id}, query_len={len(query)}, limit={limit}")
+        
+        if not user_id or user_id in ('anonymous', 'anonymous_base_user'):
+            logger.warning(f"⚠️ UploadSearchTool: Rejected - invalid user_id={user_id}")
+            return ToolResult(
+                success=False,
+                content="",
+                error="Upload search requires an authenticated user"
+            )
+        
+        try:
+            url = f"{self.api_gateway_url}/api/uploads/{user_id}/search"
+            params = {
+                "query": query,
+                "limit": limit,
+                "include_urls": "true"
+            }
+            
+            logger.info(f"🌐 UploadSearchTool: Calling {url}")
+            
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params=params) as response:
+                    logger.info(f"📡 UploadSearchTool: Response status={response.status}")
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"❌ UploadSearchTool: Failed - status={response.status}, body={error_text[:200]}")
+                        return ToolResult(
+                            success=False,
+                            content="",
+                            error=f"Upload search failed with status {response.status}"
+                        )
+                    
+                    data = await response.json()
+                    logger.info(f"✅ UploadSearchTool: Got {len(data.get('items', []))} items")
+            
+            items = data.get("items", [])
+            
+            if not items:
+                return ToolResult(
+                    success=True,
+                    content=f"No uploads found matching '{query}'. The user may not have uploaded files with that description yet.",
+                    metadata={"result_count": 0, "query": query, "upload_results": []}
+                )
+            
+            # Build clean structured data for UI rendering (no verbose text output)
+            # The UI will handle displaying these as a nice grid
+            upload_results = []
+            for item in items:
+                upload_results.append({
+                    "id": item.get("id"),
+                    "title": item.get("title") or item.get("original_filename") or "Untitled",
+                    "description": item.get("description"),
+                    "tags": item.get("tags", []),
+                    "collection_name": item.get("collection_name"),
+                    "content_type": item.get("content_type", ""),
+                    "signed_url": item.get("signed_url"),
+                    "is_image": item.get("content_type", "").startswith("image/"),
+                })
+            
+            # Generate a brief, natural response (no metadata dump)
+            image_count = sum(1 for r in upload_results if r["is_image"])
+            file_count = len(upload_results) - image_count
+            
+            if query:
+                content = f"I found {len(upload_results)} file{'s' if len(upload_results) != 1 else ''} matching '{query}'."
+            else:
+                content = f"Here are your recent uploads ({len(upload_results)} file{'s' if len(upload_results) != 1 else ''})."
+            
+            if image_count > 0 and file_count > 0:
+                content += f" That includes {image_count} image{'s' if image_count != 1 else ''} and {file_count} other file{'s' if file_count != 1 else ''}."
+            
+            return ToolResult(
+                success=True,
+                content=content,
+                metadata={
+                    "result_count": len(items),
+                    "query": query,
+                    "upload_results": upload_results,
+                    "tool_type": "upload_search"
+                }
+            )
+            
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"Upload search failed: {str(e)}"
+            )
+
+
 class ToolRegistry:
     """Registry for managing available tools"""
     
@@ -1342,6 +1456,7 @@ class ToolRegistry:
             self.register_tool(MemorySearchTool())
             self.register_tool(UserProfileTool())
             self.register_tool(ActivityRecommendationTool())
+            self.register_tool(UploadSearchTool())  # Search user uploads
             print("✅ Memory tools registered successfully")
         except Exception as e:
             print(f"❌ Failed to register memory tools: {e}")
