@@ -226,14 +226,15 @@ async def on_startup():
         logger.error(f"❌ Failed to initialize ProjectKB: {e}")
         app.state.project_kb = None
 
-    # Initialize ToolRegistry for module tools (cognitive + reporting)
+    # Initialize ToolRegistry for module tools (cognitive + reporting + memory)
     try:
         logger.info("🔧 Initializing ToolRegistry on startup...")
         tool_registry = ToolRegistry()
         tool_registry.register_cognitive_tools()
         tool_registry.register_reporting_tools()
+        tool_registry.register_memory_tools()  # Includes UploadSearchTool
         app.state.tool_registry = tool_registry
-        logger.info("✅ ToolRegistry ready (cognitive + reporting tools)")
+        logger.info("✅ ToolRegistry ready (cognitive + reporting + memory tools)")
     except Exception as e:
         logger.error(f"❌ Failed to initialize ToolRegistry: {e}")
         app.state.tool_registry = None
@@ -244,6 +245,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
     persona_id: Optional[str] = None
+    file_search_mode: Optional[bool] = False  # Explicit file search intent from UI toggle
 
 
 class PhotoReminiscenceImageRequest(BaseModel):
@@ -260,6 +262,7 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
     This provides a fast path for:
     - Activity suggestions via cognitive module tools.
     - Simple wellbeing summaries via reporting module tools.
+    - File search when file_search_mode is enabled (explicit user toggle).
 
     For all other inputs, it returns None and the normal LLM pipeline runs.
     """
@@ -272,9 +275,24 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
         return None
 
     async def _run_tool(name: str, **kwargs) -> Optional[Dict[str, Any]]:
-        result = await tool_registry.execute_tool(name, **kwargs)
-        if not result.success or not result.content:
+        logger.info(f"🔧 Executing tool '{name}' with kwargs: {list(kwargs.keys())}")
+        
+        # Check if tool exists
+        tool = tool_registry.get_tool(name)
+        if not tool:
+            logger.error(f"❌ Tool '{name}' not found in registry. Available tools: {[t['name'] for t in tool_registry.list_tools()]}")
             return None
+        
+        result = await tool_registry.execute_tool(name, **kwargs)
+        
+        if not result.success:
+            logger.warning(f"⚠️ Tool '{name}' failed: {result.error}")
+            return None
+        if not result.content:
+            logger.warning(f"⚠️ Tool '{name}' returned empty content")
+            return None
+            
+        logger.info(f"✅ Tool '{name}' succeeded with {len(result.content)} chars")
         response_text = result.content
         # Apply output safety filter if available
         if safety_chain is not None:
@@ -285,6 +303,23 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
         metadata = result.metadata or {}
         metadata["tool_name"] = name
         return {"response": response_text, "metadata": metadata}
+    
+    # PRIORITY: If file_search_mode is explicitly enabled, directly trigger file search
+    # This avoids any ambiguity in intent detection
+    if request.file_search_mode:
+        logger.info(f"🔍 File Search Mode ENABLED - triggering upload search for: '{request.message}'")
+        raw_message = request.message.strip()
+        
+        # Extract search keywords using LLM
+        extracted_query = await _extract_upload_search_query(raw_message)
+        logger.info(f"🔍 [File Search Mode] Extracted query: '{extracted_query}'")
+        
+        return await _run_tool(
+            "search_uploads",
+            query=extracted_query,
+            user_id=request.user_id,
+            limit=10,
+        )
 
     # Activity suggestion triggers
     activity_keywords = [
@@ -326,7 +361,128 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
             report_type="weekly",
         )
 
+    # Skip tool handling for system users (e.g., memory detector)
+    if request.user_id and request.user_id.startswith("system_"):
+        return None
+
+    # Upload/file search triggers - detect when user wants to find their uploaded files/images
+    # Use flexible word-level detection to catch natural language queries
+    
+    file_words = ["file", "files", "photo", "photos", "image", "images", "upload", "uploads", 
+                  "uploaded", "picture", "pictures", "pic", "pics", "document", "documents", "pdf"]
+    action_words = ["show", "find", "search", "get", "display", "preview", "recent", "where", 
+                    "look", "locate", "pull", "retrieve", "fetch", "bring", "view", "see"]
+    
+    has_file_word = any(w in text for w in file_words)
+    has_possessive = "my " in text or "my\n" in text or " i " in text or text.startswith("i ")
+    has_action = any(w in text for w in action_words)
+    
+    # Specific phrase triggers that strongly indicate file search intent
+    upload_phrases = [
+        "my files", "my photos", "my images", "my uploads", "my uploaded",
+        "my picture", "my pictures", "my pic", "my pics", "my documents",
+        "uploaded files", "uploaded photos", "uploaded images",
+        "find my", "show my", "search my", "get my", "where is my", "where's my",
+        "recent files", "recent photos", "recent uploads", "recent images",
+        "preview of the image", "preview of the photo", "preview of the file",
+        "image of", "image called", "image titled", "image named",
+        "photo of", "photo called", "photo titled", "photo named",
+        "file called", "file titled", "file named", "file of",
+        "picture called", "picture of", "picture titled",
+        "find the image", "find the photo", "find the file", "find the picture",
+        "look for my", "looking for my",
+    ]
+    has_upload_phrase = any(phrase in text for phrase in upload_phrases)
+    
+    # Trigger upload search if:
+    # 1. Has a specific upload phrase, OR
+    # 2. Has file/photo words + possessive (my) + action verb, OR
+    # 3. Has "upload" word + file/photo/image word, OR
+    # 4. Has action word + file word (e.g. "find image", "show photo")
+    is_upload_query = (
+        has_upload_phrase or
+        (has_file_word and has_possessive and has_action) or
+        ("upload" in text and has_file_word) or
+        (has_action and has_file_word and has_possessive)
+    )
+    
+    # Debug logging for intent detection
+    if has_file_word or has_action:
+        logger.info(f"🔍 Upload intent check: file_word={has_file_word}, possessive={has_possessive}, action={has_action}, phrase={has_upload_phrase}, is_upload={is_upload_query}")
+    
+    if is_upload_query:
+        raw_message = request.message.strip()
+        logger.info(f"🔍 Upload search detected: raw_message='{raw_message}' user_id={request.user_id}")
+        
+        # Use LLM to extract actual search keywords from the user's message
+        extracted_query = await _extract_upload_search_query(raw_message)
+        logger.info(f"🔍 Extracted search query: '{extracted_query}'")
+        
+        return await _run_tool(
+            "search_uploads",
+            query=extracted_query,
+            user_id=request.user_id,
+            limit=10,  # Get more results for broader searches
+        )
+
     return None
+
+
+async def _extract_upload_search_query(user_message: str) -> str:
+    """
+    Use LLM to extract the actual search terms from a user's upload search request.
+    
+    Examples:
+    - "Show me my recent uploaded files and photos" -> "" (empty = get all recent)
+    - "Can you find my upload with 'faith' and 'ai generated' tags?" -> "faith ai generated"
+    - "Find my vacation photos from last summer" -> "vacation summer"
+    """
+    try:
+        llm_manager = getattr(app.state, "llm_manager", None)
+        if llm_manager is None:
+            llm_manager = LLMManager()
+            app.state.llm_manager = llm_manager
+        
+        system_prompt = """You are a search query extractor. Extract ONLY the specific search keywords from the user's file search request.
+
+RULES:
+1. Extract ONLY specific file names, tags, descriptions, or keywords mentioned
+2. Remove conversational phrases like "can you find", "show me", "my recent", etc.
+3. If user mentions specific text in quotes, extract that text
+4. If user just wants "recent files" or "my uploads" with no specific criteria, return exactly: NONE
+5. Return ONLY the extracted keywords on a single line, nothing else
+
+EXAMPLES:
+Input: "Show me my recent uploaded files and photos" -> Output: NONE
+Input: "Can you find my upload with 'faith' and 'ai generated' tags?" -> Output: faith ai generated
+Input: "Find my vacation photos" -> Output: vacation
+Input: "Show me the image called sunset beach" -> Output: sunset beach
+Input: "Get my files tagged with nature and landscape" -> Output: nature landscape
+Input: "Display my recent uploads" -> Output: NONE
+Input: "Find the picture with a cat" -> Output: cat"""
+
+        extraction_prompt = {
+            "system_prompt": system_prompt,
+            "user_input": f"Extract keywords from: {user_message}",
+            "max_tokens": 50,
+        }
+        
+        response = await llm_manager.generate(prompt=extraction_prompt)
+        extracted = response.content.strip().strip('"').strip("'")
+        
+        # Handle the NONE marker for "get all recent" queries
+        if extracted.upper() == "NONE" or not extracted:
+            return ""
+        
+        # If the LLM returns something that looks like an error or explanation, use empty string
+        if len(extracted) > 100 or "sorry" in extracted.lower() or "cannot" in extracted.lower():
+            return ""
+        
+        return extracted
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to extract search query, using empty string: {e}")
+        return ""
 
 @app.get("/health")
 async def health():
