@@ -304,22 +304,57 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
         metadata["tool_name"] = name
         return {"response": response_text, "metadata": metadata}
     
-    # PRIORITY: If file_search_mode is explicitly enabled, directly trigger file search
-    # This avoids any ambiguity in intent detection
+    # PRIORITY: If file_search_mode is explicitly enabled, handle file search
     if request.file_search_mode:
-        logger.info(f"🔍 File Search Mode ENABLED - triggering upload search for: '{request.message}'")
+        logger.info(f"🔍 File Search Mode ENABLED - processing: '{request.message}'")
         raw_message = request.message.strip()
+        msg_lower = raw_message.lower()
         
-        # Extract search keywords using LLM
+        # Extract semantic search keywords using LLM (handles "beautiful sun" → "sun sunset", "my mom" → "mom mother")
         extracted_query = await _extract_upload_search_query(raw_message)
         logger.info(f"🔍 [File Search Mode] Extracted query: '{extracted_query}'")
         
-        return await _run_tool(
+        # If LLM couldn't extract anything meaningful, use the raw message as fallback
+        # This allows searches for files literally named "hey" or "hi" to still work
+        search_query = extracted_query if extracted_query else raw_message
+        
+        # ALWAYS perform the search first - no rigid rejections
+        tool_result = await _run_tool(
             "search_uploads",
-            query=extracted_query,
+            query=search_query,
             user_id=request.user_id,
             limit=10,
         )
+        
+        # Check if search returned no results - then provide helpful guidance
+        if tool_result:
+            metadata = tool_result.get("metadata", {})
+            upload_results = metadata.get("upload_results", [])
+            
+            if len(upload_results) == 0:
+                logger.info(f"🔍 Search returned 0 results for '{raw_message}'")
+                
+                # Check if the message looks like casual chat (for friendlier guidance)
+                casual_patterns = ["hey", "hi", "hello", "yo", "sup", "how are you", "what's up", "thanks", "ok", "yes", "no"]
+                looks_like_chat = msg_lower in casual_patterns or any(msg_lower.startswith(p) for p in casual_patterns)
+                
+                if looks_like_chat:
+                    guidance = (
+                        f"I couldn't find any files matching '{raw_message}'. "
+                        "If you're trying to chat, turn off **File Search** at the top! 💬"
+                    )
+                else:
+                    guidance = (
+                        f"I couldn't find any files matching '{raw_message}'. "
+                        "Could you try different keywords or be more specific?"
+                    )
+                
+                return {
+                    "response": guidance,
+                    "metadata": {"no_results_found": True, "original_query": raw_message}
+                }
+        
+        return tool_result
 
     # Activity suggestion triggers
     activity_keywords = [
@@ -345,14 +380,27 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
             max_recommendations=ctx.get("max_recommendations", 3),
         )
 
-    # Wellbeing summary triggers
+    # Wellbeing summary triggers - expanded keywords
     wellbeing_keywords = [
         "wellbeing summary",
         "well-being summary",
         "wellbeing report",
         "how have i been",
         "how am i doing",
+        "how have i been doing",
+        "how am i doing lately",
         "summary of my week",
+        "my weekly summary",
+        "what have i been up to",
+        "give me a summary",
+        "my progress",
+        "how's my week",
+        "how was my week",
+        "show my stats",
+        "my statistics",
+        "my engagement",
+        "how engaged have i been",
+        "my activity summary",
     ]
     if any(kw in text for kw in wellbeing_keywords):
         return await _run_tool(
@@ -365,65 +413,39 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
     if request.user_id and request.user_id.startswith("system_"):
         return None
 
-    # Upload/file search triggers - detect when user wants to find their uploaded files/images
-    # Use flexible word-level detection to catch natural language queries
-    
-    file_words = ["file", "files", "photo", "photos", "image", "images", "upload", "uploads", 
-                  "uploaded", "picture", "pictures", "pic", "pics", "document", "documents", "pdf"]
-    action_words = ["show", "find", "search", "get", "display", "preview", "recent", "where", 
-                    "look", "locate", "pull", "retrieve", "fetch", "bring", "view", "see"]
-    
-    has_file_word = any(w in text for w in file_words)
-    has_possessive = "my " in text or "my\n" in text or " i " in text or text.startswith("i ")
-    has_action = any(w in text for w in action_words)
-    
-    # Specific phrase triggers that strongly indicate file search intent
-    upload_phrases = [
-        "my files", "my photos", "my images", "my uploads", "my uploaded",
-        "my picture", "my pictures", "my pic", "my pics", "my documents",
-        "uploaded files", "uploaded photos", "uploaded images",
-        "find my", "show my", "search my", "get my", "where is my", "where's my",
-        "recent files", "recent photos", "recent uploads", "recent images",
-        "preview of the image", "preview of the photo", "preview of the file",
-        "image of", "image called", "image titled", "image named",
-        "photo of", "photo called", "photo titled", "photo named",
-        "file called", "file titled", "file named", "file of",
-        "picture called", "picture of", "picture titled",
-        "find the image", "find the photo", "find the file", "find the picture",
-        "look for my", "looking for my",
+    # Detect file search intent when button is OFF - guide user to enable it
+    # This prevents the LLM from making up responses about files not existing
+    file_search_phrases = [
+        "find my", "show my", "get my", "where is my", "where's my",
+        "search my", "locate my", "look for my", "looking for my",
+        "my file", "my photo", "my image", "my picture", "my upload",
+        "my files", "my photos", "my images", "my pictures", "my uploads",
+        "find the file", "find the photo", "find the image", "find the picture",
     ]
-    has_upload_phrase = any(phrase in text for phrase in upload_phrases)
     
-    # Trigger upload search if:
-    # 1. Has a specific upload phrase, OR
-    # 2. Has file/photo words + possessive (my) + action verb, OR
-    # 3. Has "upload" word + file/photo/image word, OR
-    # 4. Has action word + file word (e.g. "find image", "show photo")
-    is_upload_query = (
-        has_upload_phrase or
-        (has_file_word and has_possessive and has_action) or
-        ("upload" in text and has_file_word) or
-        (has_action and has_file_word and has_possessive)
-    )
+    # Check for file/photo/image words combined with possessive or action words
+    has_file_word = any(w in text for w in ["file", "photo", "image", "picture", "upload", "pic"])
+    has_find_action = any(w in text for w in ["find", "show", "get", "where", "search", "locate", "look"])
+    has_possessive = "my " in text or "my\n" in text
     
-    # Debug logging for intent detection
-    if has_file_word or has_action:
-        logger.info(f"🔍 Upload intent check: file_word={has_file_word}, possessive={has_possessive}, action={has_action}, phrase={has_upload_phrase}, is_upload={is_upload_query}")
+    # Exclude questions about HOW to do things (those should go to RAG)
+    is_how_question = text.startswith("how") or "how do i" in text or "how can i" in text
     
-    if is_upload_query:
-        raw_message = request.message.strip()
-        logger.info(f"🔍 Upload search detected: raw_message='{raw_message}' user_id={request.user_id}")
-        
-        # Use LLM to extract actual search keywords from the user's message
-        extracted_query = await _extract_upload_search_query(raw_message)
-        logger.info(f"🔍 Extracted search query: '{extracted_query}'")
-        
-        return await _run_tool(
-            "search_uploads",
-            query=extracted_query,
-            user_id=request.user_id,
-            limit=10,  # Get more results for broader searches
+    # If user is clearly trying to find their files but button is OFF
+    if not is_how_question and (
+        any(phrase in text for phrase in file_search_phrases) or
+        (has_file_word and has_find_action and has_possessive)
+    ):
+        logger.info(f"🔍 File search intent detected but button is OFF - guiding user")
+        guidance_response = (
+            "To search your files, please enable the **File Search** button at the top of the chat "
+            "(the green button near BETA). Click it so it says 'File Search ON', then ask me again "
+            "and I'll find your file! 🔍"
         )
+        return {
+            "response": guidance_response,
+            "metadata": {"guided_file_search": True}
+        }
 
     return None
 
@@ -443,23 +465,26 @@ async def _extract_upload_search_query(user_message: str) -> str:
             llm_manager = LLMManager()
             app.state.llm_manager = llm_manager
         
-        system_prompt = """You are a search query extractor. Extract ONLY the specific search keywords from the user's file search request.
+        system_prompt = """You are a semantic search query extractor. Extract keywords that could match file names, tags, or descriptions.
 
-RULES:
-1. Extract ONLY specific file names, tags, descriptions, or keywords mentioned
-2. Remove conversational phrases like "can you find", "show me", "my recent", etc.
-3. If user mentions specific text in quotes, extract that text
-4. If user just wants "recent files" or "my uploads" with no specific criteria, return exactly: NONE
-5. Return ONLY the extracted keywords on a single line, nothing else
+CRITICAL RULES:
+1. Extract meaningful nouns and descriptive words from the user's request
+2. Include SYNONYMS and related words that might match files (e.g., "mom" → "mom mother", "sun" → "sun sunset")
+3. DO NOT respond conversationally - output ONLY keywords or NONE
+4. Return keywords on a single line, space-separated
+5. Maximum 6 words total
 
 EXAMPLES:
-Input: "Show me my recent uploaded files and photos" -> Output: NONE
-Input: "Can you find my upload with 'faith' and 'ai generated' tags?" -> Output: faith ai generated
-Input: "Find my vacation photos" -> Output: vacation
-Input: "Show me the image called sunset beach" -> Output: sunset beach
-Input: "Get my files tagged with nature and landscape" -> Output: nature landscape
-Input: "Display my recent uploads" -> Output: NONE
-Input: "Find the picture with a cat" -> Output: cat"""
+Input: "find my file with a beautiful sun" -> Output: sun sunset sunshine
+Input: "show me my mom" -> Output: mom mother
+Input: "find pictures of my dog" -> Output: dog puppy pet
+Input: "beach vacation photos" -> Output: beach vacation
+Input: "faith" -> Output: faith
+Input: "find the sunset image" -> Output: sunset sun
+Input: "show my family photos" -> Output: family
+Input: "find my cat playing" -> Output: cat
+Input: "hey" -> Output: NONE
+Input: "how are you" -> Output: NONE"""
 
         extraction_prompt = {
             "system_prompt": system_prompt,
@@ -474,8 +499,20 @@ Input: "Find the picture with a cat" -> Output: cat"""
         if extracted.upper() == "NONE" or not extracted:
             return ""
         
-        # If the LLM returns something that looks like an error or explanation, use empty string
-        if len(extracted) > 100 or "sorry" in extracted.lower() or "cannot" in extracted.lower():
+        # Detect if LLM returned a conversational response instead of keywords
+        conversational_indicators = [
+            "😊", "!", "?", "how can i", "help you", "hi!", "hey!", "hello!",
+            "what would you like", "i can help", "let me know", "sorry",
+            "cannot", "i'm here", "i am here", "great to"
+        ]
+        extracted_lower = extracted.lower()
+        if any(ind in extracted_lower for ind in conversational_indicators):
+            logger.warning(f"⚠️ LLM returned conversational response instead of keywords: '{extracted}'")
+            return ""
+        
+        # If the response is too long, it's probably not keywords
+        if len(extracted) > 50 or len(extracted.split()) > 5:
+            logger.warning(f"⚠️ LLM returned too many words, treating as no keywords: '{extracted}'")
             return ""
         
         return extracted
@@ -626,7 +663,7 @@ async def chat(request: ChatRequest):
                     "luki", "lukitoken", "caps", "cap ", "token", "tokens", "wallet",
                     "nft", "genesis", "forum", "market", "dashboard", "elr",
                     "electronic life record", "carefi",
-                    # Referral & invite flows  ensure these always use ProjectKB
+                    # Referral & invite flows  ensure these always use ProjectKB
                     "referral", "referr", "referral link", "invite friends", "community builder",
                     # Rewards & tokenomics language
                     "care action points", "care points", "registration bonus", "referral rewards",
@@ -651,6 +688,26 @@ async def chat(request: ChatRequest):
                     # Technical / infrastructure
                     "convex lattice", "convex solutions", "remegrid convex", "carefi defi",
                     "electronic life records", "elr data", "ai for elr", "carefi services",
+                    # Chat interface features - "how do I" questions
+                    "how do i upload", "how to upload", "upload a file", "upload an image",
+                    "upload a photo", "my uploads", "file upload", "image upload",
+                    "how do i generate", "generate an image", "generate image", "create image",
+                    "make an image", "ai image", "image generation",
+                    "how do i play", "play a game", "start a game", "games available",
+                    "word garden", "memory tiles", "luki arcade", "luki runner",
+                    "how do i start", "start an activity", "activities", "cognitive activity",
+                    "photo reminiscence", "life story", "life stories",
+                    "how do i encrypt", "encrypt my", "encryption", "wallet encryption",
+                    "protect my data", "secure my memories",
+                    "star button", "star menu", "features menu", "plus button",
+                    "where is the menu", "how do i access", "how do i find",
+                    # ReMeLife website features - settings, subscription, account
+                    "how do i upgrade", "upgrade my account", "subscription", "plus plan", "pro plan",
+                    "how do i change", "change my username", "change my password", "change theme",
+                    "change profile picture", "profile picture", "avatar",
+                    "how do i delete", "delete my account", "delete account", "danger zone",
+                    "settings", "account settings", "notifications", "sounds",
+                    "where is my", "where can i find", "how to find",
                 ]
 
                 if msg and any(kw in msg_lower for kw in platform_keywords):
