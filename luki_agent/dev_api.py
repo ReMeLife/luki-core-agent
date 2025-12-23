@@ -341,7 +341,7 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
                 if looks_like_chat:
                     guidance = (
                         f"I couldn't find any files matching '{raw_message}'. "
-                        "If you're trying to chat, turn off **File Search** at the top! 💬"
+                        "If you're trying to chat, turn off **File Search** in the ✶ menu! 💬"
                     )
                 else:
                     guidance = (
