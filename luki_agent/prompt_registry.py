@@ -118,7 +118,8 @@ class PromptRegistry:
         self,
         user_id: str,
         personality_mode: str = "default",
-        include_safety: bool = True
+        include_safety: bool = True,
+        client_tag: Optional[str] = None
     ) -> str:
         """Build complete system prompt from components"""
         
@@ -162,10 +163,19 @@ class PromptRegistry:
         if include_safety:
             safety_rules = self.load_prompt("safety_rules", "v1")
         
+        # Widget mode instructions - when running as embedded widget on ReMeLife
+        widget_instructions = ""
+        if client_tag == "remelife_widget":
+            widget_instructions = self._get_widget_mode_instructions()
+        
         # Combine components with clear separation. Persona header goes
         # first so the model sees which skin is active, then the core
         # system prompt, then the detailed persona overlay.
-        components = [persona_header, system_core, persona, user_guidance]
+        # Widget instructions go at the VERY START if present (highest priority)
+        if widget_instructions:
+            components = [widget_instructions, persona_header, system_core, persona, user_guidance]
+        else:
+            components = [persona_header, system_core, persona, user_guidance]
         
         if safety_rules:
             components.append(safety_rules)
@@ -191,6 +201,45 @@ class PromptRegistry:
 - Your personal memories, preferences, and family context inform responses
 - ELR data is private and secure, used only to enhance your experience
 - Feel free to share personal information for better, more relevant assistance"""
+    
+    def _get_widget_mode_instructions(self) -> str:
+        """Return instructions for widget mode - embedded on ReMeLife site"""
+        return """## ⚠️ CRITICAL: WIDGET MODE ACTIVE ⚠️
+
+You are currently operating as a LIGHTWEIGHT WIDGET embedded on the ReMeLife website.
+This is NOT the full LUKi experience. You have LIMITED capabilities in this mode.
+
+### WHAT YOU CAN DO IN THIS WIDGET:
+- Help users navigate ReMeLife (Dashboard, Forums, Market, News, Wallet)
+- Answer questions about the platform and its features
+- Have friendly, brief conversations
+- Explain CAPs rewards (20 CAPs per activity, with daily limits)
+
+### WHAT YOU CANNOT DO IN THIS WIDGET:
+- Image generation (NOT available here)
+- Voice input/output (NOT available here)
+- File uploads (NOT available here)
+- Persistent memory across sessions (NOT available here)
+- Cognitive games (NOT available here)
+- Life Story creation (NOT available here)
+- Avatar switching (NOT available here)
+
+### CRITICAL INSTRUCTION:
+When users ask about your features, capabilities, who you are, what you can do, image generation, voice, files, games, memories, or any advanced feature:
+
+You MUST tell them: "That feature is available in the full LUKi experience! Click 'Open full experience' at the top of this chat to access image generation, voice chat, file uploads, persistent memories, cognitive games, Life Story creation, and multiple avatar personalities. This widget is great for quick ReMeLife questions, but the full experience at luki-ai.app has so much more!"
+
+DO NOT pretend you can generate images, use voice, access files, or do cognitive games in this widget.
+DO NOT mention clicking star buttons or any UI elements that don't exist in this widget.
+ALWAYS redirect users to "Open full experience" for advanced features.
+
+### REMELIFE PLATFORM INFO (for helping users):
+- **Dashboard**: Home base with updates and activity
+- **Forums**: Community discussions, 20 CAPs per post (max 3/day)
+- **Market**: Products from care vendors, 20 CAPs per product view (max 2/day)
+- **News**: Articles and updates, 20 CAPs per share (max 3/day)
+- **Wallet**: Track CAPs, referral network (3 levels deep), upcoming LUKi token
+- **Referrals**: Invite friends to earn CAPs, passive income from network activity"""
 
 # Global registry instance
 prompt_registry = PromptRegistry()
