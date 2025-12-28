@@ -246,6 +246,7 @@ class ChatRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
     persona_id: Optional[str] = None
     file_search_mode: Optional[bool] = False  # Explicit file search intent from UI toggle
+    client_tag: Optional[str] = None  # Widget mode detection (e.g., "remelife_widget")
 
 
 class PhotoReminiscenceImageRequest(BaseModel):
@@ -265,7 +266,15 @@ async def _maybe_handle_with_tools(request: ChatRequest, safety_chain=None) -> O
     - File search when file_search_mode is enabled (explicit user toggle).
 
     For all other inputs, it returns None and the normal LLM pipeline runs.
+    
+    NOTE: Module tools (cognitive, reporting, engagement) are DISABLED for
+    remelife_widget to keep it as a simple stateless page guide.
     """
+    # Skip ALL module tools for remelife_widget - it's a stateless page guide
+    if request.client_tag == "remelife_widget":
+        logger.info("🚫 Skipping module tools for remelife_widget (stateless guide mode)")
+        return None
+    
     tool_registry = getattr(app.state, "tool_registry", None)
     if tool_registry is None:
         return None
@@ -779,8 +788,9 @@ async def chat(request: ChatRequest):
             wallet_context=wallet_context,
             personality_mode=personality_mode,
             world_day_context=world_day_context,  # World day awareness
+            client_tag=request.client_tag,  # Widget mode detection
         )
-        logger.info(f"✅ Step 3: Context built successfully")
+        logger.info(f"✅ Step 3: Context built successfully (client_tag={request.client_tag})")
         
         # Log what's in the context result
         if context_result.get("final_prompt", {}).get("retrieval_context"):
@@ -942,7 +952,9 @@ async def chat_stream(request: ChatRequest):
                 wallet_context=wallet_context,
                 personality_mode=personality_mode,
                 world_day_context=world_day_context,  # World day awareness
+                client_tag=request.client_tag,  # Widget mode detection
             )
+            logger.info(f"🔧 Stream context built (client_tag={request.client_tag})")
 
             async for token in llm_manager.generate_stream(prompt=context_result["final_prompt"]):
                 yield f"data: {json.dumps({'token': token})}\n\n"
