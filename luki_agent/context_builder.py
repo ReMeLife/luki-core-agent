@@ -79,7 +79,8 @@ class ContextBuilder:
         wallet_context: Optional[Dict[str, Any]] = None,
         personality_mode: str = "default",
         include_safety: bool = True,
-        world_day_context: Optional[Dict[str, Any]] = None  # World day awareness
+        world_day_context: Optional[Dict[str, Any]] = None,  # World day awareness
+        client_tag: Optional[str] = None  # Widget mode detection
     ) -> Dict[str, Any]:
         """Build context with strict slot separation and sanitization"""
         
@@ -89,7 +90,8 @@ class ContextBuilder:
         system_prompt = prompt_registry.build_system_prompt(
             user_id=user_id,
             personality_mode=personality_mode,
-            include_safety=include_safety
+            include_safety=include_safety,
+            client_tag=client_tag
         )
 
         if wallet_context:
