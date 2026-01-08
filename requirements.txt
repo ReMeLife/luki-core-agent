@@ -1,16 +1,16 @@
 # Core FastAPI dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.3.0
 
 # HTTP and async
 httpx==0.26.0
-aiohttp==3.9.1
+aiohttp>=3.9.3
 
 # LangChain ecosystem - stable compatible versions
 langchain-core==0.3.80
-openai==1.25.0
+openai>=1.70.0,<2.0.0
 instructor==1.11.3
 
 # ML dependencies - CPU optimized versions
@@ -19,24 +19,24 @@ torch==2.8.0
 transformers==4.36.2
 sentence-transformers==2.2.2
 tiktoken>=0.7.0
-together
+together>=1.3.0
 accelerate
 chromadb==0.4.18
 
 # Data processing - lighter versions
-numpy==1.24.4
+numpy>=1.26.0
 pandas==2.1.4
 scikit-learn==1.3.2
 
 # Utilities
-jinja2==3.1.2
+jinja2>=3.1.4,<4.0.0
 python-jose[cryptography]==3.3.0
 cryptography==41.0.7
 redis==5.0.1
 structlog==23.2.0
 
 # Web search for current information
-tavily-python==0.3.0
+tavily-python>=0.5.0
 
 # Monitoring - minimal versions
 opentelemetry-api==1.21.0
