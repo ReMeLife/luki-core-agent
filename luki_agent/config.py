@@ -1,7 +1,16 @@
-"""Configuration management for LUKi Agent."""
+"""Configuration management for LUKi Agent with validation and health checks."""
 
 import os
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class ConfigurationError(Exception):
+    """Raised when configuration is invalid or missing required values"""
+    pass
+
 
 class AppSettings:
     # Service Info
@@ -50,6 +59,69 @@ class AppSettings:
     engagement_service_url: str = os.getenv("LUKI_ENGAGEMENT_SERVICE_URL", "http://localhost:8102")
     security_service_url: str = os.getenv("LUKI_SECURITY_SERVICE_URL", "http://localhost:8103")
     reporting_service_url: str = os.getenv("LUKI_REPORTING_SERVICE_URL", "http://localhost:8104")
+    
+    # Observability settings
+    enable_metrics: bool = os.getenv("LUKI_ENABLE_METRICS", "true").lower() == "true"
+    enable_tracing: bool = os.getenv("LUKI_ENABLE_TRACING", "false").lower() == "true"
+    log_level: str = os.getenv("LUKI_LOG_LEVEL", "INFO").upper()
+    
+    # Resilience settings
+    enable_retry: bool = os.getenv("LUKI_ENABLE_RETRY", "true").lower() == "true"
+    max_retry_attempts: int = int(os.getenv("LUKI_MAX_RETRY_ATTEMPTS", "3"))
+    enable_circuit_breaker: bool = os.getenv("LUKI_ENABLE_CIRCUIT_BREAKER", "true").lower() == "true"
+    
+    def validate(self) -> bool:
+        """
+        Validate configuration and log warnings for missing optional settings
+        
+        Returns:
+            True if configuration is valid
+        
+        Raises:
+            ConfigurationError: If critical configuration is missing
+        """
+        errors = []
+        warnings = []
+        
+        # Check critical model configuration
+        backend_config = self.model_config.get(self.default_backend)
+        if not backend_config:
+            errors.append(f"No configuration for default backend: {self.default_backend}")
+        elif not backend_config.get("api_key"):
+            if self.environment == "production":
+                errors.append(f"API key not configured for {self.default_backend} backend")
+            else:
+                warnings.append(f"API key not configured for {self.default_backend} backend")
+        
+        # Check service URLs are valid
+        service_urls = {
+            "memory_service": self.memory_service_url,
+            "cognitive_service": self.cognitive_service_url,
+            "security_service": self.security_service_url
+        }
+        
+        for service_name, url in service_urls.items():
+            if not url or url == "http://localhost:0":
+                warnings.append(f"{service_name} URL not properly configured: {url}")
+        
+        # Check timeout values are reasonable
+        if self.structured_timeout < 5:
+            warnings.append(f"structured_timeout ({self.structured_timeout}s) is very low, may cause timeouts")
+        
+        if self.memory_service_timeout < 5:
+            warnings.append(f"memory_service_timeout ({self.memory_service_timeout}s) is very low")
+        
+        # Log warnings
+        for warning in warnings:
+            logger.warning(f"Configuration warning: {warning}")
+        
+        # Raise errors
+        if errors:
+            error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            raise ConfigurationError(error_msg)
+        
+        logger.info(f"Configuration validated successfully for environment: {self.environment}")
+        return True
 
 settings = AppSettings()
 
