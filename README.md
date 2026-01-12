@@ -51,7 +51,6 @@ This framework can be adapted for various AI assistant use cases while maintaini
 
 ## 3. Tech Stack  
 - **Framework:** Custom agent orchestration with FastAPI  
-- **Models:** ChatGPT OSS 20B/120B (hybrid) via Together AI, with fallback support  
 - **Prompt Templating:** Jinja2 templates with structured JSON response schemas  
 - **Safety Filters:** Configurable content filters and PII detection  
 - **Tracing & Eval:** OpenTelemetry integration, custom evaluation scripts  
@@ -150,7 +149,6 @@ export MODULES_TOKEN=dev123               # auth to call public modules
 ~~~powershell
 $env:LUKI_MODEL_BACKEND="together"         # Together AI backend (default)
 $env:TOGETHER_API_KEY="your_together_key"   # required for Together AI models
-$env:LUKI_PRIMARY_MODEL="openai/gpt-oss-20b" # ChatGPT OSS 20B model
 $env:MEMORY_SERVICE_URL="http://localhost:8002" 
 $env:MODULES_TOKEN="dev123"                # auth to call public modules
 >>>>>>> develop
@@ -225,12 +223,14 @@ pytest -q
 ---
 
 ## 9. Roadmap  
-- Multi-agent subteams (planner, critic, executor)  
-- Enhanced structured output with improved JSON schemas  
-- RLHF-lite loop using user thumbs-up/down  
-- Realtime streaming support (server-sent events)  
-- Fine-grained AB tests on prompt variants  
-- Integration with ChatGPT OSS 120B for complex reasoning tasks
+**Note:** Many core features are already implemented:
+- ✅ **Realtime streaming support (SSE)** - Implemented in `dev_api.py`, `minimal_api.py`, and `standalone_api.py`
+- ✅ **Web search tool** - Implemented using Tavily API (`tools/web_search.py`)
+- ✅ **Module tools integration** - Cognitive, engagement, and reporting tools registered and callable
+- **Multi-agent subteams** (planner, critic, executor)  
+- **Enhanced structured output** with improved JSON schemas  
+- **RLHF-lite loop** using user thumbs-up/down  
+- **Fine-grained AB tests** on prompt variants  
 
 ---
 
