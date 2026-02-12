@@ -1,6 +1,7 @@
 """Development API for LUKi Core Agent."""
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any, AsyncGenerator
@@ -13,9 +14,54 @@ import base64
 import io
 import zipfile
 import re
+import secrets as secrets_mod
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# INTERNAL API SECRET PROTECTION
+# =============================================================================
+# This secret must match between the API Gateway and Core Agent.
+# Only requests with the correct X-Internal-Secret header are allowed.
+# This prevents external scripts from directly calling the core agent
+# and draining Together AI credits.
+# =============================================================================
+
+INTERNAL_API_SECRET = os.getenv("LUKI_INTERNAL_API_SECRET", "")
+INTERNAL_SECRET_HEADER = APIKeyHeader(name="X-Internal-Secret", auto_error=False)
+
+PUBLIC_ENDPOINTS = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
+
+
+async def verify_internal_secret(
+    request: Request,
+    api_key: Optional[str] = Depends(INTERNAL_SECRET_HEADER)
+) -> bool:
+    """
+    Verify that the request includes the correct internal API secret.
+    
+    Returns True if:
+    - The endpoint is public (health checks, docs)
+    - LUKI_INTERNAL_API_SECRET is not set (dev mode / backwards compatibility)
+    - The X-Internal-Secret header matches the configured secret
+    
+    Raises HTTPException 403 if the secret is configured but doesn't match.
+    """
+    if request.url.path in PUBLIC_ENDPOINTS:
+        return True
+    
+    if not INTERNAL_API_SECRET:
+        return True
+    
+    if not api_key or not secrets_mod.compare_digest(api_key, INTERNAL_API_SECRET):
+        logger.warning(f"Unauthorized request to {request.url.path} - invalid or missing internal secret")
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Invalid or missing internal API secret"
+        )
+    
+    return True
 
 
 def _is_identity_question(text: str) -> bool:
@@ -536,7 +582,7 @@ async def health():
     return {"status": "healthy"}
 
 
-@app.post("/v1/reme/photo-reminiscence-images")
+@app.post("/v1/reme/photo-reminiscence-images", dependencies=[Depends(verify_internal_secret)])
 async def photo_reminiscence_images(request: PhotoReminiscenceImageRequest):
     """Generate one or more images for the Photo Reminiscence activity.
 
@@ -589,7 +635,7 @@ async def photo_reminiscence_images(request: PhotoReminiscenceImageRequest):
             detail="An internal error occurred while generating images",
         )
 
-@app.post("/v1/chat")
+@app.post("/v1/chat", dependencies=[Depends(verify_internal_secret)])
 async def chat(request: ChatRequest):
     # Debug: Log all incoming requests
     logger.info(f"🔍 INCOMING REQUEST: user_id={request.user_id}, message_length={len(request.message)}")
@@ -821,7 +867,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 
-@app.post("/v1/chat/stream")
+@app.post("/v1/chat/stream", dependencies=[Depends(verify_internal_secret)])
 async def chat_stream(request: ChatRequest):
     async def event_generator():
         try:
