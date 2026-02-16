@@ -1,7 +1,10 @@
 """
 Context Builder for LUKi Agent - Hardened Version
 
-Builds context for LLM prompts with strict slot separation, sanitization, and token budgets.
+Builds context for LLM prompts with strict slot separation, sanitization,
+and token budgets.  Integrates with :mod:`context_optimizer` to cache
+retrieval and knowledge context across rapid successive requests for
+the same user.
 """
 
 from typing import Dict, List, Optional, Any
@@ -11,6 +14,7 @@ from datetime import datetime
 
 from .prompt_registry import prompt_registry
 from .features.tiers import infer_tier_from_balance
+from .context_optimizer import get_context_optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +55,21 @@ def sanitize_retrieval_context(text: str) -> str:
     return sanitized
 
 class ContextBuilder:
-    """Hardened context builder with slot separation and sanitization"""
-    
+    """Hardened context builder with slot separation and sanitization.
+
+    Uses :class:`ContextOptimizer` to cache sanitised retrieval and knowledge
+    context so repeated requests for the same user within the TTL window
+    (~5 min) avoid redundant processing.
+    """
+
     def __init__(self, memory_retriever=None):
         self.memory_retriever = memory_retriever
+        self._optimizer = get_context_optimizer()
         # CRITICAL: Increased context limit - modern LLMs support 128k+ tokens
         # Previous limit of 2048 was causing unnecessary truncation
         # Together AI models support much larger contexts
         self.max_context_tokens = 16384  # 16k tokens for context (out of 128k+ model capacity)
-        
+
         # Token budget allocation per slot (generous budgets for accuracy)
         self.slot_budgets = {
             'system_prompt': 4096,      # Full system prompt without truncation
@@ -161,13 +171,30 @@ class ContextBuilder:
         auth_status = "authenticated" if is_authenticated else "anonymous"
         print(f"✅ Using FULL prompt for {auth_status} user (query: {len(user_input)} chars)")
         
-        # Build sanitized retrieval context
+        # Build sanitized retrieval context (with cache support)
         retrieval_context = ""
-        
+
+        # Check cache for previously-sanitised retrieval context for this user.
+        # Cache key includes a hash of the raw memory content so stale data is
+        # never served.
+        _mem_cache_params = None
         if memory_context:
+            import hashlib as _hl
+            _mem_fingerprint = _hl.md5(
+                str([(m.get("content", "")[:80], m.get("created_at")) for m in memory_context]).encode()
+            ).hexdigest()[:12]
+            _mem_cache_params = {"fingerprint": _mem_fingerprint}
+            cached_retrieval = self._optimizer.cache.get(
+                user_id, "retrieval_context", _mem_cache_params
+            ) if self._optimizer.cache else None
+            if cached_retrieval is not None:
+                retrieval_context = cached_retrieval.get("text", "")
+                print(f"⚡ ContextBuilder: Using cached retrieval context for user")
+
+        if memory_context and not retrieval_context:
             # Log what we received
             print(f"📦 ContextBuilder: Received {len(memory_context)} memory items")
-            
+
             # Sanitize and filter memory context with temporal awareness
             sanitized_memories = []
             for item in memory_context[:10]:  # Increase limit to show more memories
@@ -235,6 +262,15 @@ class ContextBuilder:
             if sanitized_memories:
                 retrieval_context = "\n\nRelevant Context:\n" + "\n".join(f"- {mem}" for mem in sanitized_memories)
                 print(f"🎉 ContextBuilder: Built retrieval context with {len(sanitized_memories)} memories")
+
+                # Cache the sanitised text so the next request within the TTL
+                # window for this user skips all the sanitisation work.
+                if self._optimizer.cache and _mem_cache_params:
+                    self._optimizer.cache.set(
+                        user_id, "retrieval_context",
+                        {"text": retrieval_context},
+                        _mem_cache_params,
+                    )
             else:
                 print(f"⚠️ ContextBuilder: No valid memories after sanitization")
         
