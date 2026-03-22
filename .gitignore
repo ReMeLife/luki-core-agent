@@ -237,3 +237,11 @@ logs/
 .cache/
 .ipynb_checkpoints/
 engagement.db
+.DS_Store
+.idea/
+.vscode/
+
+# Railway deployment (local-only, not needed on GitHub)
+railway.toml
+.railwayignore
+requirements-railway.txt
