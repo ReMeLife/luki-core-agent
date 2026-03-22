@@ -1,6 +1,6 @@
 # luki-core-agent
 
-> **This repository is archived.** Active development continues in a private repository with expanded persona management, improved safety detection, and streaming architecture. This public version reflects the ReMeLife integration era and is no longer maintained or deployed.
+> **This repository is archived.** Active development continues in a private repository with expanded persona management, improved safety detection, and streaming architecture. This public version reflects the ReMeLife integration era and is no longer maintained.
 
 AI agent framework: dialogue orchestration, tool routing, safety filtering, and LLM backend integration.
 
