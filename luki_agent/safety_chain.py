@@ -63,12 +63,12 @@ class SafetyChain:
             'address': re.compile(r'\b\d+\s+[A-Za-z0-9\s,]+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Way|Court|Ct)\b', re.IGNORECASE),
         }
         
-        # Unsafe content patterns
+        # Unsafe content patterns — require harmful context, not standalone words
         self.unsafe_patterns = [
-            re.compile(r'\b(?:suicide|kill\s+myself|end\s+my\s+life|want\s+to\s+die)\b', re.IGNORECASE),
-            re.compile(r'\b(?:medical\s+advice|diagnosis|prescription|medication\s+dosage)\b', re.IGNORECASE),
-            re.compile(r'\b(?:legal\s+advice|sue|lawsuit|attorney|lawyer)\b', re.IGNORECASE),
-            re.compile(r'\b(?:financial\s+advice|investment|stock\s+tip|crypto)\b', re.IGNORECASE),
+            re.compile(r'\b(?:kill\s+myself|end\s+my\s+life|want\s+to\s+die|plan\s+to\s+die)\b', re.IGNORECASE),
+            re.compile(r'\b(?:give\s+me\s+)?(?:medical\s+advice|diagnosis|prescription|medication\s+dosage)\b', re.IGNORECASE),
+            re.compile(r'\b(?:give\s+me\s+legal\s+advice|should\s+I\s+sue|file\s+a\s+lawsuit)\b', re.IGNORECASE),
+            re.compile(r'\b(?:give\s+me\s+financial\s+advice|should\s+I\s+invest|stock\s+tip)\b', re.IGNORECASE),
         ]
         
         # Inappropriate content patterns
