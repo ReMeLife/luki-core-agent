@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Primary LUKi brain: dialogue manager, tool orchestration, prompt packs & safety layers"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "PROPRIETARY"}
+license = {text = "Apache-2.0"}
 authors = [
     {name = "ReMeLife Team", email = "dev@remelife.com"},
 ]

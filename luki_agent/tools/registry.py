@@ -1326,8 +1326,7 @@ class UploadSearchTool(BaseTool):
     
     def __init__(self, api_gateway_url: Optional[str] = None):
         self.api_gateway_url = api_gateway_url or os.getenv(
-            "LUKI_API_GATEWAY_URL", 
-            "https://diplomatic-recreation-staging.up.railway.app"
+            "LUKI_API_GATEWAY_URL", ""
         )
     
     @property
