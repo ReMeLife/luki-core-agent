@@ -8,7 +8,6 @@ from typing import Optional, List, Dict, Any, AsyncGenerator
 import json
 import logging
 import traceback
-from dataclasses import asdict
 import os
 import base64
 import io
@@ -710,6 +709,12 @@ async def chat(request: ChatRequest):
                 msg_lower = msg.lower()
                 msg_len = len(msg)
 
+                # Skip ProjectKB for identity questions — let the persona respond
+                skip_kb = _is_identity_question(msg_lower)
+                if skip_kb:
+                    logger.info("ProjectKB: skipping search for identity question (persona will handle)")
+                    proj_docs = []
+
                 # Only hit ProjectKB when the user is clearly asking about
                 # ReMeLife/LUKi/platform concepts. This prevents care- and
                 # docs-heavy content from hijacking casual chat (e.g. "tell me a joke").
@@ -765,7 +770,7 @@ async def chat(request: ChatRequest):
                     "where is my", "where can i find", "how to find",
                 ]
 
-                if msg and any(kw in msg_lower for kw in platform_keywords):
+                if not skip_kb and msg and any(kw in msg_lower for kw in platform_keywords):
                     # CRITICAL: Smart top_k selection based on query complexity
                     # Keyword-based boost ensures complete information for critical topics
                     if any(keyword in msg_lower for keyword in ['caps', 'cap', 'earn', 'reward', 'token', 'reme', 'luki']):
@@ -777,7 +782,7 @@ async def chat(request: ChatRequest):
 
                     logger.info(f"ProjectKB search: msg_len={msg_len}, top_k={top_k}, query='{msg[:50]}...'")
                     proj_docs = kb.search(msg, top_k=top_k)
-                else:
+                elif not skip_kb:
                     logger.info("ProjectKB: skipping search for non-platform or empty query")
                     proj_docs = []
             except Exception as e:
